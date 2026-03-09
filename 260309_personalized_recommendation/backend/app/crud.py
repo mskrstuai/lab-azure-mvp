@@ -1,0 +1,148 @@
+from collections import OrderedDict
+from typing import Optional
+
+from sqlalchemy import distinct
+from sqlalchemy.orm import Session
+
+from . import models
+
+ARTICLE_ID_LENGTH = 10
+
+
+def _article_with_image(article: models.Article):
+    article_id = str(article.article_id).zfill(ARTICLE_ID_LENGTH)
+    image_url = f"/images/{article_id[:3]}/{article_id}.jpg"
+    return {
+        "article_id": str(article.article_id),
+        "product_code": article.product_code,
+        "prod_name": article.prod_name,
+        "product_type_name": article.product_type_name,
+        "product_group_name": article.product_group_name,
+        "graphical_appearance_name": article.graphical_appearance_name,
+        "colour_group_name": article.colour_group_name,
+        "perceived_colour_value_name": article.perceived_colour_value_name,
+        "perceived_colour_master_name": article.perceived_colour_master_name,
+        "department_name": article.department_name,
+        "index_name": article.index_name,
+        "index_group_name": article.index_group_name,
+        "section_name": article.section_name,
+        "garment_group_name": article.garment_group_name,
+        "detail_desc": article.detail_desc,
+        "image_url": image_url,
+    }
+
+
+def get_articles(
+    db: Session,
+    limit: int = 50,
+    offset: int = 0,
+    prod_name: Optional[str] = None,
+    index_group_name: Optional[str] = None,
+    product_type_name: Optional[str] = None,
+    product_group_name: Optional[str] = None,
+    colour_group_name: Optional[str] = None,
+    section_name: Optional[str] = None,
+    garment_group_name: Optional[str] = None,
+):
+    query = db.query(models.Article)
+    if prod_name:
+        escaped = prod_name.replace("%", r"\%").replace("_", r"\_")
+        query = query.filter(models.Article.prod_name.ilike(f"%{escaped}%", escape="\\"))
+    if index_group_name:
+        query = query.filter(models.Article.index_group_name == index_group_name)
+    if product_type_name:
+        query = query.filter(models.Article.product_type_name == product_type_name)
+    if product_group_name:
+        query = query.filter(models.Article.product_group_name == product_group_name)
+    if colour_group_name:
+        query = query.filter(models.Article.colour_group_name == colour_group_name)
+    if section_name:
+        query = query.filter(models.Article.section_name == section_name)
+    if garment_group_name:
+        query = query.filter(models.Article.garment_group_name == garment_group_name)
+    rows = query.offset(offset).limit(limit).all()
+    return [_article_with_image(row) for row in rows]
+
+
+def get_article(db: Session, article_id: str) -> Optional[dict]:
+    row = db.query(models.Article).filter(models.Article.article_id == article_id).first()
+    if not row:
+        return None
+    return _article_with_image(row)
+
+
+def get_article_filter_options(db: Session):
+    def _distinct_values(column):
+        rows = db.query(distinct(column)).filter(column.isnot(None)).order_by(column).all()
+        return [r[0] for r in rows]
+
+    return {
+        "index_group_name": _distinct_values(models.Article.index_group_name),
+        "product_type_name": _distinct_values(models.Article.product_type_name),
+        "product_group_name": _distinct_values(models.Article.product_group_name),
+        "colour_group_name": _distinct_values(models.Article.colour_group_name),
+        "section_name": _distinct_values(models.Article.section_name),
+        "garment_group_name": _distinct_values(models.Article.garment_group_name),
+    }
+
+
+def get_customers(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
+    query = db.query(models.Customer)
+    if customer_id:
+        escaped = customer_id.replace("%", r"\%").replace("_", r"\_")
+        query = query.filter(models.Customer.customer_id.ilike(f"%{escaped}%", escape="\\"))
+    return query.offset(offset).limit(limit).all()
+
+
+def get_customer(db: Session, customer_id: str):
+    return db.query(models.Customer).filter(models.Customer.customer_id == customer_id).first()
+
+
+def get_transactions(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
+    query = db.query(models.Transaction)
+    if customer_id:
+        query = query.filter(models.Transaction.customer_id == customer_id)
+    return query.offset(offset).limit(limit).all()
+
+
+def get_transactions_grouped(
+    db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None
+):
+    """Return transactions grouped by (t_dat, customer_id) with enriched article info."""
+    query = db.query(models.Transaction).order_by(
+        models.Transaction.t_dat.desc(), models.Transaction.customer_id
+    )
+    if customer_id:
+        query = query.filter(models.Transaction.customer_id == customer_id)
+    rows = query.offset(offset).limit(limit).all()
+
+    # Collect unique article IDs and fetch article details in one batch
+    article_ids = list({r.article_id for r in rows if r.article_id})
+    articles_map: dict = {}
+    if article_ids:
+        article_rows = (
+            db.query(models.Article)
+            .filter(models.Article.article_id.in_(article_ids))
+            .all()
+        )
+        articles_map = {str(a.article_id): _article_with_image(a) for a in article_rows}
+
+    # Group by (date, customer_id) preserving order
+    groups: OrderedDict = OrderedDict()
+    for txn in rows:
+        key = (txn.t_dat or "Unknown", txn.customer_id or "Unknown")
+        if key not in groups:
+            groups[key] = {"t_dat": key[0], "customer_id": key[1], "items": []}
+        article_info = articles_map.get(str(txn.article_id))
+        groups[key]["items"].append(
+            {
+                "article_id": txn.article_id,
+                "price": txn.price,
+                "sales_channel_id": txn.sales_channel_id,
+                "article": article_info,
+            }
+        )
+
+    return list(groups.values())
+
+
