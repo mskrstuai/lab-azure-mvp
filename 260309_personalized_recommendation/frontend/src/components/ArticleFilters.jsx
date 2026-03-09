@@ -30,7 +30,7 @@ function ArticleFilters({ filters, onFilterChange }) {
           className="filter-toggle"
           onClick={() => setExpanded((prev) => !prev)}
         >
-          🔍 Filters{activeCount > 0 && <span className="filter-count">{activeCount}</span>}
+          🔍 Filters {activeCount > 0 && <span className="filter-count">{activeCount}</span>}
           <span className="toggle-arrow">{expanded ? "▲" : "▼"}</span>
         </button>
         {activeCount > 0 && (

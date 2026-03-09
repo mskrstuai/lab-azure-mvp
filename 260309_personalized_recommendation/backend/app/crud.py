@@ -45,7 +45,8 @@ def get_articles(
 ):
     query = db.query(models.Article)
     if prod_name:
-        query = query.filter(models.Article.prod_name.ilike(f"%{prod_name}%"))
+        escaped = prod_name.replace("%", r"\%").replace("_", r"\_")
+        query = query.filter(models.Article.prod_name.ilike(f"%{escaped}%", escape="\\"))
     if index_group_name:
         query = query.filter(models.Article.index_group_name == index_group_name)
     if product_type_name:
