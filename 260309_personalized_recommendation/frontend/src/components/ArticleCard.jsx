@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { API_SERVER_URL } from "../api/apiClient";
 
-function ArticleCard({ article }) {
+function ArticleCard({ article, onClick }) {
   const [imgError, setImgError] = useState(false);
   const imageUrl = article.image_url ? `${API_SERVER_URL}${article.image_url}` : null;
 
   return (
-    <div className="article-card">
+    <div className="article-card" onClick={() => onClick && onClick(article.article_id)}>
       {imageUrl && !imgError ? (
         <img
           className="card-image"

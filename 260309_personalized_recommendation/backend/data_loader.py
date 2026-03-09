@@ -15,7 +15,7 @@ def load_to_sqlite(data_dir: Path, db_path: Path):
 
     articles.to_sql("articles", engine, if_exists="replace", index=False)
     customers.to_sql("customers", engine, if_exists="replace", index=False)
-    transactions.to_sql("transactions", engine, if_exists="replace", index=False)
+    transactions.to_sql("transactions", engine, if_exists="replace", index=True, index_label="id")
 
     print(f"Loaded SQLite DB at: {db_path}")
 

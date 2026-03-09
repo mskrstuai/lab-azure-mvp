@@ -1,5 +1,6 @@
 from typing import Optional
 
+from sqlalchemy import distinct
 from sqlalchemy.orm import Session
 
 from . import models
@@ -30,8 +31,34 @@ def _article_with_image(article: models.Article):
     }
 
 
-def get_articles(db: Session, limit: int = 50, offset: int = 0):
-    rows = db.query(models.Article).offset(offset).limit(limit).all()
+def get_articles(
+    db: Session,
+    limit: int = 50,
+    offset: int = 0,
+    prod_name: Optional[str] = None,
+    index_group_name: Optional[str] = None,
+    product_type_name: Optional[str] = None,
+    product_group_name: Optional[str] = None,
+    colour_group_name: Optional[str] = None,
+    section_name: Optional[str] = None,
+    garment_group_name: Optional[str] = None,
+):
+    query = db.query(models.Article)
+    if prod_name:
+        query = query.filter(models.Article.prod_name.ilike(f"%{prod_name}%"))
+    if index_group_name:
+        query = query.filter(models.Article.index_group_name == index_group_name)
+    if product_type_name:
+        query = query.filter(models.Article.product_type_name == product_type_name)
+    if product_group_name:
+        query = query.filter(models.Article.product_group_name == product_group_name)
+    if colour_group_name:
+        query = query.filter(models.Article.colour_group_name == colour_group_name)
+    if section_name:
+        query = query.filter(models.Article.section_name == section_name)
+    if garment_group_name:
+        query = query.filter(models.Article.garment_group_name == garment_group_name)
+    rows = query.offset(offset).limit(limit).all()
     return [_article_with_image(row) for row in rows]
 
 
@@ -40,6 +67,21 @@ def get_article(db: Session, article_id: str) -> Optional[dict]:
     if not row:
         return None
     return _article_with_image(row)
+
+
+def get_article_filter_options(db: Session):
+    def _distinct_values(column):
+        rows = db.query(distinct(column)).filter(column.isnot(None)).order_by(column).all()
+        return [r[0] for r in rows]
+
+    return {
+        "index_group_name": _distinct_values(models.Article.index_group_name),
+        "product_type_name": _distinct_values(models.Article.product_type_name),
+        "product_group_name": _distinct_values(models.Article.product_group_name),
+        "colour_group_name": _distinct_values(models.Article.colour_group_name),
+        "section_name": _distinct_values(models.Article.section_name),
+        "garment_group_name": _distinct_values(models.Article.garment_group_name),
+    }
 
 
 def get_customers(db: Session, limit: int = 50, offset: int = 0):

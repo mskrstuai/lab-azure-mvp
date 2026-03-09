@@ -1,23 +1,46 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { fetchEntities } from "../api/apiClient";
 import ArticleCard from "../components/ArticleCard";
+import ArticleDetailModal from "../components/ArticleDetailModal";
+import ArticleFilters from "../components/ArticleFilters";
 import { DEFAULT_PAGE_LIMIT } from "../constants";
+
+const EMPTY_FILTERS = {
+  prod_name: "",
+  index_group_name: "",
+  product_type_name: "",
+  product_group_name: "",
+  colour_group_name: "",
+  section_name: "",
+  garment_group_name: "",
+};
 
 function ArticlesPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [selectedId, setSelectedId] = useState(null);
   const limit = DEFAULT_PAGE_LIMIT;
   const page = Math.floor(offset / limit) + 1;
 
-  useEffect(() => {
+  const loadArticles = useCallback(() => {
     setLoading(true);
-    fetchEntities("articles", limit, offset)
+    fetchEntities("articles", limit, offset, filters)
       .then(setRows)
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-  }, [offset]);
+  }, [offset, filters, limit]);
+
+  useEffect(() => {
+    loadArticles();
+  }, [loadArticles]);
+
+  const handleFilterChange = (newFilters) => {
+    setFilters(newFilters);
+    setOffset(0);
+  };
 
   return (
     <section className="page-section">
@@ -25,6 +48,8 @@ function ArticlesPage() {
         👗 Articles
         <span className="badge">Page {page}</span>
       </h2>
+
+      <ArticleFilters filters={filters} onFilterChange={handleFilterChange} />
 
       {loading ? (
         <div className="loading">
@@ -39,7 +64,11 @@ function ArticlesPage() {
       ) : (
         <div className="article-grid">
           {rows.map((article) => (
-            <ArticleCard key={article.article_id} article={article} />
+            <ArticleCard
+              key={article.article_id}
+              article={article}
+              onClick={setSelectedId}
+            />
           ))}
         </div>
       )}
@@ -59,6 +88,13 @@ function ArticlesPage() {
           Next →
         </button>
       </div>
+
+      {selectedId && (
+        <ArticleDetailModal
+          articleId={selectedId}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </section>
   );
 }
