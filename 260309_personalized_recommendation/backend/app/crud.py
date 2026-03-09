@@ -4,9 +4,11 @@ from sqlalchemy.orm import Session
 
 from . import models
 
+ARTICLE_ID_LENGTH = 10
+
 
 def _article_with_image(article: models.Article):
-    article_id = str(article.article_id).zfill(10)
+    article_id = str(article.article_id).zfill(ARTICLE_ID_LENGTH)
     image_url = f"/images/{article_id[:3]}/{article_id}.jpg"
     return {
         "article_id": str(article.article_id),

@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { API_SERVER_URL } from "../api/apiClient";
 
 function EntityTable({ rows }) {
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
+  const [hiddenImages, setHiddenImages] = useState({});
   const columns = useMemo(() => (rows.length ? Object.keys(rows[0]) : []), [rows]);
 
   const sortedRows = useMemo(() => {
@@ -36,17 +38,19 @@ function EntityTable({ rows }) {
         </tr>
       </thead>
       <tbody>
-        {sortedRows.map((row, index) => (
-          <tr key={index}>
+        {sortedRows.map((row, index) => {
+          const rowKey = row.id ?? row.article_id ?? row.customer_id ?? `${index}-${JSON.stringify(row)}`;
+          return (
+          <tr key={rowKey}>
             {columns.map((column) => (
-              <td key={`${index}-${column}`}>
-                {column === "image_url" && row[column] ? (
+              <td key={`${rowKey}-${column}`}>
+                {column === "image_url" && row[column] && !hiddenImages[rowKey] ? (
                   <img
                     className="article-image"
-                    src={`http://127.0.0.1:8000${row[column]}`}
+                    src={`${API_SERVER_URL}${row[column]}`}
                     alt={row.prod_name || row.article_id}
                     onError={(event) => {
-                      event.currentTarget.style.display = "none";
+                      setHiddenImages((prev) => ({ ...prev, [rowKey]: true }));
                     }}
                   />
                 ) : (
@@ -55,7 +59,8 @@ function EntityTable({ rows }) {
               </td>
             ))}
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   );

@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 
 import { fetchEntities } from "../api/apiClient";
 import EntityTable from "../components/EntityTable";
+import { DEFAULT_PAGE_LIMIT } from "../constants";
 
 function TransactionsPage() {
   const [rows, setRows] = useState([]);
   const [offset, setOffset] = useState(0);
-  const limit = 20;
+  const limit = DEFAULT_PAGE_LIMIT;
 
   useEffect(() => {
     fetchEntities("transactions", limit, offset).then(setRows).catch(() => setRows([]));

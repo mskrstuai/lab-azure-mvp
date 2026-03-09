@@ -1,4 +1,4 @@
-fastapi==0.115.12
-uvicorn==0.34.0
-sqlalchemy==2.0.39
-pandas==2.2.3
+fastapi~=0.115.0
+uvicorn~=0.34.0
+sqlalchemy~=2.0.39
+pandas~=2.2.3
