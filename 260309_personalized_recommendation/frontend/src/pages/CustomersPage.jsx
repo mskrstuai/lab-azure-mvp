@@ -6,19 +6,49 @@ import { DEFAULT_PAGE_LIMIT } from "../constants";
 
 function CustomersPage() {
   const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
   const limit = DEFAULT_PAGE_LIMIT;
+  const page = Math.floor(offset / limit) + 1;
 
   useEffect(() => {
-    fetchEntities("customers", limit, offset).then(setRows).catch(() => setRows([]));
+    setLoading(true);
+    fetchEntities("customers", limit, offset)
+      .then(setRows)
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
   }, [offset]);
 
   return (
-    <section>
-      <EntityTable rows={rows} />
+    <section className="page-section">
+      <h2 className="page-title">
+        👤 Customers
+        <span className="badge">Page {page}</span>
+      </h2>
+
+      {loading ? (
+        <div className="loading">
+          <div className="spinner" />
+          <p>Loading customers…</p>
+        </div>
+      ) : (
+        <EntityTable rows={rows} />
+      )}
+
       <div className="pagination">
-        <button onClick={() => setOffset((prev) => Math.max(0, prev - limit))}>Previous</button>
-        <button onClick={() => setOffset((prev) => prev + limit)}>Next</button>
+        <button
+          onClick={() => setOffset((prev) => Math.max(0, prev - limit))}
+          disabled={offset === 0}
+        >
+          ← Previous
+        </button>
+        <span className="page-info">Page {page}</span>
+        <button
+          onClick={() => setOffset((prev) => prev + limit)}
+          disabled={rows.length < limit}
+        >
+          Next →
+        </button>
       </div>
     </section>
   );

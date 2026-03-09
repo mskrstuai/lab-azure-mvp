@@ -1,9 +1,7 @@
 import { useMemo, useState } from "react";
-import { API_SERVER_URL } from "../api/apiClient";
 
 function EntityTable({ rows }) {
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
-  const [hiddenImages, setHiddenImages] = useState({});
   const columns = useMemo(() => (rows.length ? Object.keys(rows[0]) : []), [rows]);
 
   const sortedRows = useMemo(() => {
@@ -24,45 +22,48 @@ function EntityTable({ rows }) {
     }));
   };
 
-  if (!rows.length) return <p>No rows found.</p>;
+  if (!rows.length) {
+    return (
+      <div className="empty-state">
+        <div className="icon">📭</div>
+        <p>No rows found.</p>
+      </div>
+    );
+  }
 
   return (
-    <table>
-      <thead>
-        <tr>
-          {columns.map((column) => (
-            <th key={column} onClick={() => onSort(column)}>
-              {column}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {sortedRows.map((row, index) => {
-          const rowKey = row.id ?? row.article_id ?? row.customer_id ?? `${index}-${JSON.stringify(row)}`;
-          return (
-          <tr key={rowKey}>
-            {columns.map((column) => (
-              <td key={`${rowKey}-${column}`}>
-                {column === "image_url" && row[column] && !hiddenImages[rowKey] ? (
-                  <img
-                    className="article-image"
-                    src={`${API_SERVER_URL}${row[column]}`}
-                    alt={row.prod_name || row.article_id}
-                    onError={(event) => {
-                      setHiddenImages((prev) => ({ ...prev, [rowKey]: true }));
-                    }}
-                  />
-                ) : (
-                  String(row[column] ?? "")
-                )}
-              </td>
-            ))}
+    <div className="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            {columns.map((column) => {
+              const isActive = sortConfig.key === column;
+              const arrow = isActive ? (sortConfig.direction === "asc" ? "▲" : "▼") : "⇅";
+              return (
+                <th key={column} onClick={() => onSort(column)}>
+                  {column}
+                  <span className={`sort-icon ${isActive ? "active" : ""}`}>{arrow}</span>
+                </th>
+              );
+            })}
           </tr>
-          );
-        })}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {sortedRows.map((row, index) => {
+            const rowKey = row.id ?? row.article_id ?? row.customer_id ?? `${index}`;
+            return (
+              <tr key={rowKey}>
+                {columns.map((column) => (
+                  <td key={`${rowKey}-${column}`}>
+                    {String(row[column] ?? "—")}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

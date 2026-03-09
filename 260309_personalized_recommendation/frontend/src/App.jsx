@@ -5,32 +5,37 @@ import CustomersPage from "./pages/CustomersPage";
 import TransactionsPage from "./pages/TransactionsPage";
 
 const TABS = {
-  articles: "Articles",
-  customers: "Customers",
-  transactions: "Transactions"
+  articles: { label: "Articles", icon: "👗" },
+  customers: { label: "Customers", icon: "👤" },
+  transactions: { label: "Transactions", icon: "📋" }
 };
 
 function App() {
   const [activeTab, setActiveTab] = useState("articles");
 
   return (
-    <div className="container">
-      <h1>H&amp;M Personalized Recommendation Demo</h1>
-      <div className="tabs">
-        {Object.entries(TABS).map(([key, label]) => (
-          <button
-            key={key}
-            className={`tab ${activeTab === key ? "active" : ""}`}
-            onClick={() => setActiveTab(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      {activeTab === "articles" && <ArticlesPage />}
-      {activeTab === "customers" && <CustomersPage />}
-      {activeTab === "transactions" && <TransactionsPage />}
-    </div>
+    <>
+      <header className="app-header">
+        <h1>H&amp;M Recommendation Demo</h1>
+        <p className="subtitle">Personalized Fashion Recommendations</p>
+        <nav className="tabs">
+          {Object.entries(TABS).map(([key, { label, icon }]) => (
+            <button
+              key={key}
+              className={`tab ${activeTab === key ? "active" : ""}`}
+              onClick={() => setActiveTab(key)}
+            >
+              {icon}&ensp;{label}
+            </button>
+          ))}
+        </nav>
+      </header>
+      <main className="main-content">
+        {activeTab === "articles" && <ArticlesPage />}
+        {activeTab === "customers" && <CustomersPage />}
+        {activeTab === "transactions" && <TransactionsPage />}
+      </main>
+    </>
   );
 }
 
