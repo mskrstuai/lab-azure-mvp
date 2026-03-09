@@ -1,4 +1,3 @@
-import datetime
 from typing import Optional
 
 from sqlalchemy import distinct
@@ -104,22 +103,3 @@ def get_transactions(db: Session, limit: int = 50, offset: int = 0, customer_id:
         query = query.filter(models.Transaction.customer_id == customer_id)
     return query.offset(offset).limit(limit).all()
 
-
-def get_chats(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
-    query = db.query(models.Chat)
-    if customer_id:
-        query = query.filter(models.Chat.customer_id == customer_id)
-    return query.order_by(models.Chat.created_at.desc()).offset(offset).limit(limit).all()
-
-
-def create_chat(db: Session, customer_id: Optional[str], message: str, sender: str):
-    chat = models.Chat(
-        customer_id=customer_id,
-        message=message,
-        sender=sender,
-        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    )
-    db.add(chat)
-    db.commit()
-    db.refresh(chat)
-    return chat

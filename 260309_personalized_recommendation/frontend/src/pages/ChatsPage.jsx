@@ -1,140 +1,107 @@
-import { useEffect, useState } from "react";
+import { useState, useRef, useEffect } from "react";
 
-import { fetchEntities } from "../api/apiClient";
 import { API_BASE_URL } from "../api/apiClient";
-import EntityTable from "../components/EntityTable";
-import { DEFAULT_PAGE_LIMIT } from "../constants";
 
 function ChatsPage() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [offset, setOffset] = useState(0);
-  const [customerIdFilter, setCustomerIdFilter] = useState("");
-  const [appliedFilter, setAppliedFilter] = useState("");
-  const [newMessage, setNewMessage] = useState("");
-  const [senderId, setSenderId] = useState("");
-  const limit = DEFAULT_PAGE_LIMIT;
-  const page = Math.floor(offset / limit) + 1;
-
-  const loadChats = () => {
-    setLoading(true);
-    const filters = appliedFilter ? { customer_id: appliedFilter } : {};
-    fetchEntities("chats", limit, offset, filters)
-      .then(setRows)
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  };
+  const [messages, setMessages] = useState([
+    {
+      id: 0,
+      sender: "assistant",
+      text: "👋 Hi! I'm the H&M Fashion Assistant. Ask me anything about products, recommendations, or style advice. (Agent coming soon!)",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
-    loadChats();
-  }, [limit, offset, appliedFilter]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  const handleApplyFilter = () => {
-    setOffset(0);
-    setAppliedFilter(customerIdFilter);
-  };
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
 
-  const handleClearFilter = () => {
-    setCustomerIdFilter("");
-    setOffset(0);
-    setAppliedFilter("");
-  };
+    const userMsg = { id: Date.now(), sender: "user", text };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
 
-  const handleSendMessage = async () => {
-    if (!newMessage.trim()) return;
     try {
-      await fetch(`${API_BASE_URL}/chats`, {
+      const res = await fetch(`${API_BASE_URL}/chats`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customer_id: senderId || null,
-          message: newMessage,
-          sender: "user",
-        }),
+        body: JSON.stringify({ message: text }),
       });
-      setNewMessage("");
-      loadChats();
+      const data = await res.json();
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now() + 1, sender: "assistant", text: data.reply },
+      ]);
     } catch {
-      /* ignore send errors for now */
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          sender: "assistant",
+          text: "⚠️ Failed to reach the server. Please try again.",
+        },
+      ]);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <section className="page-section">
-      <h2 className="page-title">
-        💬 Chats
-        <span className="badge">Page {page}</span>
-      </h2>
+    <section className="chat-page">
+      <div className="chat-container">
+        {/* Message area */}
+        <div className="chat-messages">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`chat-bubble ${msg.sender === "user" ? "chat-user" : "chat-assistant"}`}
+            >
+              <div className="chat-avatar">
+                {msg.sender === "user" ? "👤" : "🤖"}
+              </div>
+              <div className="chat-text">
+                <p>{msg.text}</p>
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="chat-bubble chat-assistant">
+              <div className="chat-avatar">🤖</div>
+              <div className="chat-text">
+                <div className="chat-typing">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
-      <div className="filter-bar-inline">
-        <input
-          type="text"
-          className="filter-input"
-          placeholder="Filter by customer ID…"
-          value={customerIdFilter}
-          onChange={(e) => setCustomerIdFilter(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleApplyFilter()}
-        />
-        <button className="filter-apply-btn" onClick={handleApplyFilter}>
-          Search
-        </button>
-        {appliedFilter && (
-          <button className="filter-clear-btn" onClick={handleClearFilter}>
-            Clear
+        {/* Input area */}
+        <div className="chat-input-bar">
+          <input
+            type="text"
+            className="chat-input"
+            placeholder="Type your message…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            disabled={loading}
+          />
+          <button
+            className="chat-send-btn"
+            onClick={handleSend}
+            disabled={loading || !input.trim()}
+          >
+            {loading ? "…" : "Send ➤"}
           </button>
-        )}
-      </div>
-
-      <div className="chat-compose">
-        <input
-          type="text"
-          className="filter-input"
-          placeholder="Customer ID (optional)"
-          value={senderId}
-          onChange={(e) => setSenderId(e.target.value)}
-          style={{ maxWidth: 220 }}
-        />
-        <input
-          type="text"
-          className="filter-input chat-message-input"
-          placeholder="Type a message…"
-          value={newMessage}
-          onChange={(e) => setNewMessage(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-        />
-        <button className="filter-apply-btn" onClick={handleSendMessage}>
-          Send
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="loading">
-          <div className="spinner" />
-          <p>Loading chats…</p>
         </div>
-      ) : rows.length === 0 ? (
-        <div className="empty-state">
-          <p className="empty-icon">💬</p>
-          <p>No chats yet. Send a message to get started.</p>
-        </div>
-      ) : (
-        <EntityTable rows={rows} />
-      )}
-
-      <div className="pagination">
-        <button
-          onClick={() => setOffset((prev) => Math.max(0, prev - limit))}
-          disabled={offset === 0}
-        >
-          ← Previous
-        </button>
-        <span className="page-info">Page {page}</span>
-        <button
-          onClick={() => setOffset((prev) => prev + limit)}
-          disabled={rows.length < limit}
-        >
-          Next →
-        </button>
       </div>
     </section>
   );

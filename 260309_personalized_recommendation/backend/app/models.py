@@ -45,12 +45,3 @@ class Transaction(Base):
     price = Column(Float, nullable=True)
     sales_channel_id = Column(Integer, nullable=True)
 
-
-class Chat(Base):
-    __tablename__ = "chats"
-
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    customer_id = Column(String, nullable=True, index=True)
-    message = Column(String, nullable=True)
-    sender = Column(String, nullable=True)
-    created_at = Column(String, nullable=True)
