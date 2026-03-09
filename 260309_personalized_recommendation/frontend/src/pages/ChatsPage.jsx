@@ -1,6 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 import { API_BASE_URL } from "../api/apiClient";
+
+let nextId = 1;
 
 function ChatsPage() {
   const [messages, setMessages] = useState([
@@ -18,11 +20,11 @@ function ChatsPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
 
-    const userMsg = { id: Date.now(), sender: "user", text };
+    const userMsg = { id: nextId++, sender: "user", text };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
@@ -36,13 +38,13 @@ function ChatsPage() {
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
-        { id: Date.now() + 1, sender: "assistant", text: data.reply },
+        { id: nextId++, sender: "assistant", text: data.reply },
       ]);
     } catch {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now() + 1,
+          id: nextId++,
           sender: "assistant",
           text: "⚠️ Failed to reach the server. Please try again.",
         },
@@ -50,7 +52,7 @@ function ChatsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading]);
 
   return (
     <section className="chat-page">
