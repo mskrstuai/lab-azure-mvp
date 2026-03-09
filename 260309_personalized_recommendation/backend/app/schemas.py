@@ -54,3 +54,22 @@ class TransactionBase(BaseModel):
 class Transaction(TransactionBase):
     class Config:
         from_attributes = True
+
+
+class ChatBase(BaseModel):
+    id: int
+    customer_id: Optional[str] = None
+    message: Optional[str] = None
+    sender: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class Chat(ChatBase):
+    class Config:
+        from_attributes = True
+
+
+class ChatCreate(BaseModel):
+    customer_id: Optional[str] = None
+    message: str
+    sender: str

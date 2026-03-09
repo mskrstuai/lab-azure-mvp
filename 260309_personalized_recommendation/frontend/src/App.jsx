@@ -3,11 +3,13 @@ import { useState } from "react";
 import ArticlesPage from "./pages/ArticlesPage";
 import CustomersPage from "./pages/CustomersPage";
 import TransactionsPage from "./pages/TransactionsPage";
+import ChatsPage from "./pages/ChatsPage";
 
 const TABS = {
   articles: { label: "Articles", icon: "👗" },
   customers: { label: "Customers", icon: "👤" },
-  transactions: { label: "Transactions", icon: "📋" }
+  transactions: { label: "Transactions", icon: "📋" },
+  chats: { label: "Chats", icon: "💬" }
 };
 
 function App() {
@@ -34,6 +36,7 @@ function App() {
         {activeTab === "articles" && <ArticlesPage />}
         {activeTab === "customers" && <CustomersPage />}
         {activeTab === "transactions" && <TransactionsPage />}
+        {activeTab === "chats" && <ChatsPage />}
       </main>
     </>
   );

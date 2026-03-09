@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 
 from .database import Base, engine
-from .routers import articles, customers, transactions
+from .routers import articles, chats, customers, transactions
 
 Base.metadata.create_all(bind=engine)
 
@@ -54,6 +54,7 @@ app.add_middleware(
 app.include_router(articles.router, prefix="/api")
 app.include_router(customers.router, prefix="/api")
 app.include_router(transactions.router, prefix="/api")
+app.include_router(chats.router, prefix="/api")
 
 app.mount("/images", StaticFiles(directory=str(image_dir)), name="images")
 

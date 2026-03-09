@@ -8,16 +8,30 @@ function TransactionsPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
+  const [customerIdFilter, setCustomerIdFilter] = useState("");
+  const [appliedFilter, setAppliedFilter] = useState("");
   const limit = DEFAULT_PAGE_LIMIT;
   const page = Math.floor(offset / limit) + 1;
 
   useEffect(() => {
     setLoading(true);
-    fetchEntities("transactions", limit, offset)
+    const filters = appliedFilter ? { customer_id: appliedFilter } : {};
+    fetchEntities("transactions", limit, offset, filters)
       .then(setRows)
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-  }, [offset]);
+  }, [offset, appliedFilter]);
+
+  const handleApplyFilter = () => {
+    setOffset(0);
+    setAppliedFilter(customerIdFilter);
+  };
+
+  const handleClearFilter = () => {
+    setCustomerIdFilter("");
+    setOffset(0);
+    setAppliedFilter("");
+  };
 
   return (
     <section className="page-section">
@@ -25,6 +39,25 @@ function TransactionsPage() {
         📋 Transactions
         <span className="badge">Page {page}</span>
       </h2>
+
+      <div className="filter-bar-inline">
+        <input
+          type="text"
+          className="filter-input"
+          placeholder="Filter by customer ID…"
+          value={customerIdFilter}
+          onChange={(e) => setCustomerIdFilter(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleApplyFilter()}
+        />
+        <button className="filter-apply-btn" onClick={handleApplyFilter}>
+          Search
+        </button>
+        {appliedFilter && (
+          <button className="filter-clear-btn" onClick={handleClearFilter}>
+            Clear
+          </button>
+        )}
+      </div>
 
       {loading ? (
         <div className="loading">

@@ -85,13 +85,42 @@ def get_article_filter_options(db: Session):
     }
 
 
-def get_customers(db: Session, limit: int = 50, offset: int = 0):
-    return db.query(models.Customer).offset(offset).limit(limit).all()
+def get_customers(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
+    query = db.query(models.Customer)
+    if customer_id:
+        escaped = customer_id.replace("%", r"\%").replace("_", r"\_")
+        query = query.filter(models.Customer.customer_id.ilike(f"%{escaped}%", escape="\\"))
+    return query.offset(offset).limit(limit).all()
 
 
 def get_customer(db: Session, customer_id: str):
     return db.query(models.Customer).filter(models.Customer.customer_id == customer_id).first()
 
 
-def get_transactions(db: Session, limit: int = 50, offset: int = 0):
-    return db.query(models.Transaction).offset(offset).limit(limit).all()
+def get_transactions(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
+    query = db.query(models.Transaction)
+    if customer_id:
+        query = query.filter(models.Transaction.customer_id == customer_id)
+    return query.offset(offset).limit(limit).all()
+
+
+def get_chats(db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None):
+    query = db.query(models.Chat)
+    if customer_id:
+        query = query.filter(models.Chat.customer_id == customer_id)
+    return query.order_by(models.Chat.created_at.desc()).offset(offset).limit(limit).all()
+
+
+def create_chat(db: Session, customer_id: Optional[str], message: str, sender: str):
+    import datetime
+
+    chat = models.Chat(
+        customer_id=customer_id,
+        message=message,
+        sender=sender,
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+    db.add(chat)
+    db.commit()
+    db.refresh(chat)
+    return chat

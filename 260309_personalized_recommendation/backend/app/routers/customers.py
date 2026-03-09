@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import crud, schemas
@@ -8,8 +10,13 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 
 
 @router.get("", response_model=list[schemas.Customer])
-def list_customers(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    return crud.get_customers(db, limit=limit, offset=offset)
+def list_customers(
+    limit: int = 50,
+    offset: int = 0,
+    customer_id: Optional[str] = Query(None, description="Filter by customer ID (partial match)"),
+    db: Session = Depends(get_db),
+):
+    return crud.get_customers(db, limit=limit, offset=offset, customer_id=customer_id)
 
 
 @router.get("/{customer_id}", response_model=schemas.Customer)
