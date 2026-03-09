@@ -13,7 +13,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="H&M Personalized Recommendation Demo")
 
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
-image_dir = Path("./images")
+image_dir = Path(__file__).resolve().parent.parent.parent / "data" / "images"
 image_dir.mkdir(parents=True, exist_ok=True)
 
 app.add_middleware(

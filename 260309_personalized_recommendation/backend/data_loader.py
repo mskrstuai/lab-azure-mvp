@@ -22,6 +22,6 @@ def load_to_sqlite(data_dir: Path, db_path: Path):
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parent
-    dataset_dir = root / "data"
+    dataset_dir = root.parent / "data"
     sqlite_path = root / "hm.db"
     load_to_sqlite(dataset_dir, sqlite_path)
