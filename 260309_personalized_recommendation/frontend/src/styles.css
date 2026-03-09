@@ -207,7 +207,7 @@ body {
 .article-card .card-id {
   font-size: 0.75rem;
   color: var(--color-text-light);
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: 'Courier New', Courier, monospace;
 }
 
 /* ── Data Table (Customers / Transactions) ──────── */

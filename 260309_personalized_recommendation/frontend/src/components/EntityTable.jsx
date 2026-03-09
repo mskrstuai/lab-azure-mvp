@@ -50,7 +50,7 @@ function EntityTable({ rows }) {
         </thead>
         <tbody>
           {sortedRows.map((row, index) => {
-            const rowKey = row.id ?? row.article_id ?? row.customer_id ?? `${index}`;
+            const rowKey = row.id ?? row.article_id ?? row.customer_id ?? `row-${index}-${Object.values(row).slice(0, 3).join("-")}`;
             return (
               <tr key={rowKey}>
                 {columns.map((column) => (
