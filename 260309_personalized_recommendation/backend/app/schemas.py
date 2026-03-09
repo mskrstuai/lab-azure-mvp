@@ -56,6 +56,19 @@ class Transaction(TransactionBase):
         from_attributes = True
 
 
+class TransactionItem(BaseModel):
+    article_id: Optional[str] = None
+    price: Optional[float] = None
+    sales_channel_id: Optional[int] = None
+    article: Optional[Article] = None
+
+
+class TransactionGroup(BaseModel):
+    t_dat: str
+    customer_id: str
+    items: list[TransactionItem] = []
+
+
 class ChatMessage(BaseModel):
     message: str
 

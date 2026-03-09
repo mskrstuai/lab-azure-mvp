@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import Optional
 
 from sqlalchemy import distinct
@@ -102,4 +103,46 @@ def get_transactions(db: Session, limit: int = 50, offset: int = 0, customer_id:
     if customer_id:
         query = query.filter(models.Transaction.customer_id == customer_id)
     return query.offset(offset).limit(limit).all()
+
+
+def get_transactions_grouped(
+    db: Session, limit: int = 50, offset: int = 0, customer_id: Optional[str] = None
+):
+    """Return transactions grouped by (t_dat, customer_id) with enriched article info."""
+    query = db.query(models.Transaction).order_by(
+        models.Transaction.t_dat.desc(), models.Transaction.customer_id
+    )
+    if customer_id:
+        query = query.filter(models.Transaction.customer_id == customer_id)
+    rows = query.offset(offset).limit(limit).all()
+
+    # Collect unique article IDs and fetch article details in one batch
+    article_ids = list({r.article_id for r in rows if r.article_id})
+    articles_map: dict = {}
+    if article_ids:
+        article_rows = (
+            db.query(models.Article)
+            .filter(models.Article.article_id.in_(article_ids))
+            .all()
+        )
+        articles_map = {str(a.article_id): _article_with_image(a) for a in article_rows}
+
+    # Group by (date, customer_id) preserving order
+    groups: OrderedDict = OrderedDict()
+    for txn in rows:
+        key = (txn.t_dat or "Unknown", txn.customer_id or "Unknown")
+        if key not in groups:
+            groups[key] = {"t_dat": key[0], "customer_id": key[1], "items": []}
+        article_info = articles_map.get(str(txn.article_id))
+        groups[key]["items"].append(
+            {
+                "article_id": txn.article_id,
+                "price": txn.price,
+                "sales_channel_id": txn.sales_channel_id,
+                "article": article_info,
+            }
+        )
+
+    return list(groups.values())
+
 
