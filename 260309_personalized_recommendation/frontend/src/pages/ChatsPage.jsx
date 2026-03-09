@@ -27,7 +27,7 @@ function ChatsPage() {
 
   useEffect(() => {
     loadChats();
-  }, [offset, appliedFilter]);
+  }, [limit, offset, appliedFilter]);
 
   const handleApplyFilter = () => {
     setOffset(0);

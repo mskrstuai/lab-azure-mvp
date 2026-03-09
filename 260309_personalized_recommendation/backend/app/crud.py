@@ -1,3 +1,4 @@
+import datetime
 from typing import Optional
 
 from sqlalchemy import distinct
@@ -112,8 +113,6 @@ def get_chats(db: Session, limit: int = 50, offset: int = 0, customer_id: Option
 
 
 def create_chat(db: Session, customer_id: Optional[str], message: str, sender: str):
-    import datetime
-
     chat = models.Chat(
         customer_id=customer_id,
         message=message,
