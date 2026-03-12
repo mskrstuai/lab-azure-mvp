@@ -1,14 +1,29 @@
+import logging
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from fastapi import FastAPI
+
+# Load .env from agents folder (required for Azure AI Search, OpenAI, etc.)
+_env_path = Path(__file__).resolve().parent / "agents" / ".env"
+load_dotenv(dotenv_path=_env_path)
+
+# Configure logging (semantic_kernel, app)
+_log_level = os.getenv("LOG_LEVEL", "INFO")
+_level = getattr(logging, _log_level.upper(), logging.INFO)
+logging.basicConfig(level=_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+logging.getLogger("semantic_kernel").setLevel(_level)
+logging.getLogger("azure").setLevel(logging.WARNING)
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 
 from .database import Base, engine
-from .routers import articles, chats, customers, transactions
+from .routers import articles, chats, customers, preferences, transactions
 
 Base.metadata.create_all(bind=engine)
 
@@ -40,7 +55,7 @@ ensure_transactions_id_column()
 app = FastAPI(title="H&M Personalized Recommendation Demo")
 
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
-image_dir = Path(__file__).resolve().parent.parent.parent / "data" / "images"
+image_dir = Path(__file__).resolve().parent.parent / "data" / "images"
 image_dir.mkdir(parents=True, exist_ok=True)
 
 app.add_middleware(
@@ -53,6 +68,7 @@ app.add_middleware(
 
 app.include_router(articles.router, prefix="/api")
 app.include_router(customers.router, prefix="/api")
+app.include_router(preferences.router, prefix="/api")
 app.include_router(transactions.router, prefix="/api")
 app.include_router(chats.router, prefix="/api")
 

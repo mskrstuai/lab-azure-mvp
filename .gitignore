@@ -4,3 +4,13 @@
 *.pyc
 *.db
 **/data/
+.env
+*.local
+**/logs/
+
+# Frontend
+.DS_Store
+*.log
+.eslintcache
+**/coverage/
+**/.vite/

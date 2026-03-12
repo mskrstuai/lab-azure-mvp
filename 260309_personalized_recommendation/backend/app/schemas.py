@@ -71,7 +71,19 @@ class TransactionGroup(BaseModel):
 
 class ChatMessage(BaseModel):
     message: str
+    customer_id: Optional[str] = None
+
+
+class ChatSearchResult(BaseModel):
+    """Single product from search results for chat response."""
+
+    article_id: str
+    prod_name: Optional[str] = None
+    product_type_name: Optional[str] = None
+    colour_group_name: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     reply: str
+    search_results: Optional[list[ChatSearchResult]] = None
