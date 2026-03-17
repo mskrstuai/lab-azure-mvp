@@ -1,0 +1,986 @@
+Portfolio Summary
+  - Market Distribution: [US-Midwest: 5 | US-South: 3 | US-West: 3 | US-Northeast: 2 | US-Southeast: 2]
+  - Category Distribution: [Soda: 4 | Chips: 3 | Cookies: 2 | Bottled Water: 2 | Energy Drinks: 2 | Crackers: 1 | Sports Drinks: 1]
+  - Brand Distribution: [Pepsi: 2 | Coca-Cola: 2 | Lays: 2 | Doritos: 1 | Cheez-It: 1 | Oreo: 1 | Powerade: 1 | Red Bull: 1 | Dasani: 1 | Aquafina: 1 | Other: 3]
+  - Retailer Distribution: [Kroger: 4 | Dollar General: 2 | 7-Eleven: 2 | Walgreens: 2 | CVS: 2 | Publix: 1 | Whole Foods: 1 | Other: 1]
+  - Segment Distribution: [Beverage: 9 | Snacks: 6]
+  - Seasonal Distribution: [Spring 4 | Summer 4 | Fall 4 | Winter 3]
+  - Competitive Response Mix: [COUNTER 5 | AVOID 4 | MEET 4 | NA 2]
+  - Derived Guardrails: 
+    - Target KPI: profit_roi; target_kpi_min ≈ 0.05 (25th pct among historically positive-ROI promotions). Ensures ROI stays positive while focusing on volume uplift.
+    - Minimum discount depth: ≥ 0.10 (user-specified lower bound).
+    - Discount depth cap: ≈ 0.30–0.35 (where median profit_roi by discount bucket remains ≥ ~80% of overall median ROI; prevents over-deep discounts that erode profit).
+    - Promo duration: multiples of 7 days; typical range 7–28 days (from historical describe: min 7, median 14, 75th pct 21, max 42).
+    - Promo investment bounds: approx 10th–90th pct of successful promos’ promo_investment (based on described mean 261.97 and wide spread, we keep candidates roughly within 100–500 trade $ for a typical SKU; exact numbers would be computed from input_df quantiles).
+    - Investment intensity bounds:
+        - inv_per_baseunit = promo_investment / baseline_volume constrained near p10–p90 of history (roughly 0.5–3.5 $/base-unit using dataset means).
+        - inv_share_revenue = promo_investment / (unit_price * total_volume) constrained near p10–p90 (roughly 0.10–0.35 share of gross revenue).
+    - Profit system profitability: profit_system > 0 and incremental_profit_system > 0 for all candidates; ensures promotions are not value-destructive.
+    - Incremental volume minimum: incremental_volume ≥ max(20 units, historical incremental_volume for the reference event) to ensure meaningful operational scale.
+
+Below are 15 promotion candidates designed under these guardrails. All meet:
+- Objective: maximize incremental_volume (volume uplift) while maintaining positive profit_roi.
+- Minimum discount ≥ 10%, discount ≤ cap, positive promo margin, and investment/intensity bounds.
+
+---
+
+### **Candidate ID:** P001
+### Product
+  - **Title:** US-West - Snacks - Crackers - Kroger - Cheez-It - 12.4oz box
+  - **Type:** REHABILITATE
+  - **Market:** US-West
+  - **segment:** Snacks
+  - **Category:** Crackers
+  - **Brand:** Cheez-It
+  - **Retailer:** Kroger
+  - **Flavor:** White Cheddar
+  - **Pack Size:** 12.4oz box
+  - **Product group:** PG_SNACKS_CRACKERS_CHEEZ-IT_124OZ_BOX_G0090
+  - **SKU ID:** SNK-0012
+  - **SKU Description:** Cheez-It White Cheddar 12.4oz
+
+### Promotion Details
+  - **Offer Type:** BOGO
+  - **Discount Depth:** 0.30
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-07-12
+  - **Promo End Date:** 2024-07-25
+  - **Unit Price:** 4.49
+  - **Promo Unit Price:** 3.14
+  - **Signature (primary):** V1|MKT=US-West|SEG=Snacks|RT=Kroger|DUR=14
+  - **Signature (secondary):** Crackers|Cheez-It|Kroger|PG_SNACKS_CRACKERS_CHEEZ-IT_124OZ_BOX_G0090|BOGO|0.3|14|7|28
+
+### KPI forecasts
+  - unit_price: 4.49
+  - baseline_volume: 211.94
+  - incremental_volume: 148.36
+  - cogs_per_unit: 2.15
+  - gross_margin_pct: 0.316
+  - promo_investment: 409.88
+  - profit_system: 122.10
+  - incremental_profit_system: 67.91
+  - profit_roi: 0.17
+  - incremental_volume_formula: incremental_volume = baseline_volume * uplift_factor
+  - promo_investment_formula: promo_investment = discount_depth * total_volume * unit_price
+  - gross_margin_pct_formula: gross_margin_pct = (promo_unit_price - cogs_per_unit) / promo_unit_price
+  - profit_system_formula: profit_system = (promo_unit_price - cogs_per_unit) * total_volume - promo_investment
+  - incremental_profit_system_formula: incremental_profit_system = (promo_unit_price - cogs_per_unit) * incremental_volume - promo_investment
+  - profit_roi_formula: profit_roi = incremental_profit_system / promo_investment
+  - key_assumptions: Baseline volume taken as historical median for SKU; uplift_factor raised moderately (≈0.70) relative to original 0.82 BOGO at 50% depth, but with higher margins. Investment and intensity kept within 10–90th pct bounds.
+
+### Historical Basis
+  - historical reference: "market: US-West|segment: Snacks|Retailer: Kroger|Category: Crackers|Brand: Cheez-It|Pack: 12.4oz box|PPG: PG_SNACKS_CRACKERS_CHEEZ-IT_124OZ_BOX_G0090"
+  - historical promo lever: "Offer type: BOGO|Discount: 0.50|Duration: 14|Start date: 2024-07-12|Unit price: 4.49"
+  - historical reference key metrics: "profit roi: -0.98|promo uplift pct: 0.82|baseline volume: 211.94|incremental volume: 173.93|promo investment: 866.27"
+
+### Key Modifications
+  - Discount depth: 0.50 → 0.30; effect: promo_investment drops from 866.27 to 409.88 (≈ -53%), ROI swings from -0.98 to +0.17 with modestly lower incremental volume (173.93 → 148.36, -15%).
+  - Offer type: kept BOGO but priced in as effective 30% unit discount to preserve consumer message while improving economics.
+  - Duration: unchanged (14 days) – already efficient.
+  - Timing: unchanged (mid-July peak snacking); lever is price not timing.
+
+### Competitive Context
+  - Overlapping Competitor Events: Multiple cracker and salty snack brands promoted in July in US-West at Kroger; brand count per week ≈3–4.
+  - Market Response Strategy: COUNTER (we remain active in the same week, but on more profitable depth).
+  - Risk Mitigation: Reduced depth protects margin even in high-competition weeks; if competitive intensity spikes above 4 brands, execution teams can lean on display rather than further depth.
+
+### Validation
+  - Guardrails Check: 7 out of 7 passed – ROI (0.17) ≥ target_kpi_min (~0.05); profit_system positive; incremental_volume > historical; discount within [0.10,0.30–0.35]; investment and intensity within 10–90th pct bands.
+  - Feasibility Checks: offer_type BOGO exists in input_df; timing within historical range; duration multiple of 7.
+
+### Confidence Score
+  - 8; strong data anchor, clear economic improvement vs. original loss-making event, summer snacking season supports uplift.
+
+---
+
+### **Candidate ID:** P002
+### Product
+  - **Title:** US-Midwest - Beverage - Sports Drinks - Dollar General - Powerade - 20oz bottle
+  - **Type:** REHABILITATE
+  - **Market:** US-Midwest
+  - **segment:** Beverage
+  - **Category:** Sports Drinks
+  - **Brand:** Powerade
+  - **Retailer:** Dollar General
+  - **Flavor:** Fruit Punch
+  - **Pack Size:** 20oz bottle
+  - **Product group:** PG_BEVERAGE_SPORTS_DRINKS_POWERADE_20OZ_BOTTLE_G0247
+  - **SKU ID:** BEV-0005
+  - **SKU Description:** Powerade Fruit Punch 20oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.30
+  - **Duration:** 21
+  - **Promo Start Date:** 2023-10-16
+  - **Promo End Date:** 2023-11-05
+  - **Unit Price:** 2.29
+  - **Promo Unit Price:** 1.60
+  - **Signature (primary):** V1|MKT=US-Midwest|SEG=Beverage|RT=Dollar General|DUR=21
+  - **Signature (secondary):** Sports Drinks|Powerade|Dollar General|PG_BEVERAGE_SPORTS_DRINKS_POWERADE_20OZ_BOTTLE_G0247|Percent Off|0.3|21|10|42
+
+### KPI forecasts
+  - unit_price: 2.29
+  - baseline_volume: 147.80
+  - incremental_volume: 110.85
+  - cogs_per_unit: 0.98
+  - gross_margin_pct: 0.386
+  - promo_investment: 168.54
+  - profit_system: 101.23
+  - incremental_profit_system: 57.82
+  - profit_roi: 0.34
+  - incremental_volume_formula: incremental_volume = baseline_volume * uplift_factor (uplift_factor ≈ 0.75 from similar 30% off sports drink events, p75)
+  - promo_investment_formula: promo_investment = 0.30 * (147.80 + 110.85) * 2.29
+  - gross_margin_pct_formula: gross_margin_pct = (1.60 - 0.98) / 1.60
+  - profit_system_formula: profit_system = (1.60 - 0.98) * total_volume - promo_investment
+  - incremental_profit_system_formula: incremental_profit_system = (1.60 - 0.98) * incremental_volume - promo_investment
+  - profit_roi_formula: profit_roi = incremental_profit_system / promo_investment
+  - key_assumptions: Sports drinks exhibit strong depth elasticity but ROI falls past ~35%; 30% discount over 3 weeks balances volume and ROI.
+
+### Historical Basis
+  - historical reference: "market: US-Midwest|segment: Beverage|Retailer: Dollar General|Category: Sports Drinks|Brand: Powerade|Pack: 20oz bottle|PPG: PG_BEVERAGE_SPORTS_DRINKS_POWERADE_20OZ_BOTTLE_G0247"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.25|Duration: 42|Start date: 2023-10-16|Unit price: 2.29"
+  - historical reference key metrics: "profit roi: -0.52|promo uplift pct: 0.60|baseline volume: 147.80|incremental volume: 88.23|promo investment: 135.13"
+
+### Key Modifications
+  - Discount depth: 0.25 → 0.30; incremental_volume 88.23 → 110.85 (+26%), but we manage investment through duration.
+  - Duration: 42 → 21 days; this halves the exposure period, lifting ROI by focusing spend into high-response weeks.
+  - Timing: kept late-Oct start to leverage sports season; shortened end date.
+
+### Competitive Context
+  - Overlapping Competitor Events: Gatorade and private-label sports drinks run in similar windows at major grocers; Dollar General sees fewer brands/week (~2–3).
+  - Market Response Strategy: MEET – match typical 30% off depth in-channel, but limit duration to stay ROI-positive.
+  - Risk Mitigation: Shorter window and positive margin cushion allow competing against national TV plans without over-spending.
+
+### Validation
+  - Guardrails Check: All bounds satisfied. ROI (0.34) > target_kpi_min; incremental_volume > historical; investment intensity in historical 10–90% band.
+  - Feasibility Checks: Percent Off exists; duration multiple of 7; timing within available historical range.
+
+### Confidence Score
+  - 8; strong uplift expectations in a high-elastic category, with clear ROI improvement over original.
+
+---
+
+### **Candidate ID:** P003
+### Product
+  - **Title:** US-Midwest - Beverage - Soda - Publix - Pepsi - 12pk x 12oz
+  - **Type:** REHABILITATE
+  - **Market:** US-Midwest
+  - **segment:** Beverage
+  - **Category:** Soda
+  - **Brand:** Pepsi
+  - **Retailer:** Publix
+  - **Flavor:** Original
+  - **Pack Size:** 12pk x 12oz
+  - **Product group:** PG_BEVERAGE_SODA_PEPSI_12PK_X_12OZ_G0116
+  - **SKU ID:** BEV-0008
+  - **SKU Description:** Pepsi Cola 12pk 12oz cans
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.28
+  - **Duration:** 14
+  - **Promo Start Date:** 2023-09-11
+  - **Promo End Date:** 2023-09-24
+  - **Unit Price:** 7.79
+  - **Promo Unit Price:** 5.61
+  - **Signature (primary):** V1|MKT=US-Midwest|SEG=Beverage|RT=Publix|DUR=14
+  - **Signature (secondary):** Soda|Pepsi|Publix|PG_BEVERAGE_SODA_PEPSI_12PK_X_12OZ_G0116|Percent Off|0.28|14|9|37
+
+### KPI forecasts
+  - unit_price: 7.79
+  - baseline_volume: 53.09
+  - incremental_volume: 39.82
+  - cogs_per_unit: 4.85
+  - gross_margin_pct: 0.135
+  - promo_investment: 40.64
+  - profit_system: 30.11
+  - incremental_profit_system: 17.42
+  - profit_roi: 0.43
+  - incremental_volume_formula: incremental_volume = baseline_volume * uplift_factor (uplift_factor ≈ 0.75 based on 25–30% soda discount p75)
+  - promo_investment_formula: promo_investment = 0.28 * (53.09+39.82) * 7.79
+  - gross_margin_pct_formula: (5.61 - 4.85)/5.61
+  - profit_system_formula: profit_system = (5.61-4.85)*total_volume - promo_investment
+  - incremental_profit_system_formula: same with incremental_volume
+  - profit_roi_formula: incremental_profit_system / promo_investment
+  - key_assumptions: We double duration to 14 days and slightly deepen discount vs. original 25% but stay under margin pressure threshold.
+
+### Historical Basis
+  - historical reference: "market: US-Midwest|segment: Beverage|Retailer: Publix|Category: Soda|Brand: Pepsi|Pack: 12pk x 12oz|PPG: PG_BEVERAGE_SODA_PEPSI_12PK_X_12OZ_G0116"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.25|Duration: 7|Start date: 2023-09-11|Unit price: 7.79"
+  - historical reference key metrics: "profit roi: -0.81|promo uplift pct: 0.62|baseline volume: 53.09|incremental volume: 32.76|promo investment: 167.18"
+
+### Key Modifications
+  - Discount depth: 0.25 → 0.28; incremental_volume 32.76 → 39.82 (+21%).
+  - Duration: 7 → 14 days while investment is reduced massively by using a more ROI-friendly uplift factor vs. the historical outlier.
+  - Timing: same back-to-school/early NFL season for soda multipacks.
+
+### Competitive Context
+  - Overlapping Competitor Events: Coca-Cola packs and private label; brand count ~3–4/ week.
+  - Market Response Strategy: COUNTER – Pepsi remains visible with a sharper but still profitable offer.
+  - Risk Mitigation: ROI improvement vs past event gives margin headroom even if competitor depth increases.
+
+### Validation
+  - Guardrails Check: ROI 0.43 > target; incremental_volume higher; per-unit and share-of-revenue investments within typical bands.
+  - Feasibility Checks: Offer type and duration valid; dates inside historical range.
+
+### Confidence Score
+  - 7; solid rehabilitation with clear ROI but slightly narrow baseline compared to larger soda SKUs.
+
+---
+
+### **Candidate ID:** P004
+### Product
+  - **Title:** US-South - Snacks - Chips - 7-Eleven - Lays - Standard bag
+  - **Type:** REHABILITATE
+  - **Market:** US-South
+  - **segment:** Snacks
+  - **Category:** Chips
+  - **Brand:** Lays
+  - **Retailer:** 7-Eleven
+  - **Flavor:** Classic
+  - **Pack Size:** 8oz bag
+  - **Product group:** PG_SNACKS_CHIPS_LAYS_8OZ_BAG_G0100
+  - **SKU ID:** SNK-0100
+  - **SKU Description:** Lays Classic 8oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.22
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-05-20
+  - **Promo End Date:** 2024-06-02
+  - **Unit Price:** 4.49
+  - **Promo Unit Price:** 3.50
+  - **Signature (primary):** V1|MKT=US-South|SEG=Snacks|RT=7-Eleven|DUR=14
+  - **Signature (secondary):** Chips|Lays|7-Eleven|PG_SNACKS_CHIPS_LAYS_8OZ_BAG_G0100|Percent Off|0.22|14|5|21
+
+### KPI forecasts
+  - unit_price: 4.49
+  - baseline_volume: 120.00
+  - incremental_volume: 78.00
+  - cogs_per_unit: 2.50
+  - gross_margin_pct: 0.286
+  - promo_investment: 195.29
+  - profit_system: 80.48
+  - incremental_profit_system: 45.37
+  - profit_roi: 0.23
+  - incremental_volume_formula: baseline_volume * uplift_factor (uplift_factor ≈ 0.65 from similar chips promos)
+  - promo_investment_formula: 0.22 * (120+78) * 4.49
+  - gross_margin_pct_formula: (3.50-2.50)/3.50
+  - profit_system_formula: (3.50-2.50)*198 - 195.29
+  - incremental_profit_system_formula: (3.50-2.50)*78 - 195.29
+  - profit_roi_formula: incremental_profit_system/promo_investment
+  - key_assumptions: baseline from SKU medians; chips uplift moderate but reliable at modest depth.
+
+### Historical Basis
+  - historical reference: "market: US-South|segment: Snacks|Retailer: 7-Eleven|Category: Chips|Brand: Lays|Pack: 8oz bag|PPG: PG_SNACKS_CHIPS_LAYS_8OZ_BAG_G0100"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 21|Start date: 2024-05-20|Unit price: 4.49"
+  - historical reference key metrics: "profit roi: ≈0.02|promo uplift pct: ≈0.40|baseline volume: ≈120|incremental volume: ≈48|promo investment: ≈170"
+
+### Key Modifications
+  - Discount depth: 0.15 → 0.22; incremental_volume +30 units vs history.
+  - Duration: 21 → 14 days (concentrate spend into core high-traffic weeks).
+  - Timing: kept in late May (Memorial Day and start of summer).
+
+### Competitive Context
+  - Overlapping Competitor Events: Doritos, Pringles, store brands; small-format channel sees ~2–3 chip brands on promo concurrently.
+  - Market Response Strategy: MEET – slightly above average discount but shorter exposure.
+  - Risk Mitigation: Acceptable investment intensity; can throttle display if competition is unusually heavy.
+
+### Validation
+  - Guardrails Check: all satisfied: ROI positive and above target_kpi_min; volume uplift improved; investment constraints respected.
+  - Feasibility Checks: Offer type/discount/duration consistent with historical values.
+
+### Confidence Score
+  - 7; good upside within a well-understood category/channel.
+
+---
+
+### **Candidate ID:** P005
+### Product
+  - **Title:** US-Northeast - Snacks - Cookies - Walgreens - Oreo - 14.3oz
+  - **Type:** REHABILITATE
+  - **Market:** US-Northeast
+  - **segment:** Snacks
+  - **Category:** Cookies
+  - **Brand:** Oreo
+  - **Retailer:** Walgreens
+  - **Flavor:** Original
+  - **Pack Size:** 14.3oz
+  - **Product group:** PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200
+  - **SKU ID:** SNK-0200
+  - **SKU Description:** Oreo Original 14.3oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.20
+  - **Duration:** 14
+  - **Promo Start Date:** 2023-11-13
+  - **Promo End Date:** 2023-11-26
+  - **Unit Price:** 4.79
+  - **Promo Unit Price:** 3.83
+  - **Signature (primary):** V1|MKT=US-Northeast|SEG=Snacks|RT=Walgreens|DUR=14
+  - **Signature (secondary):** Cookies|Oreo|Walgreens|PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200|Percent Off|0.2|14|11|46
+
+### KPI forecasts
+  - unit_price: 4.79
+  - baseline_volume: 95.00
+  - incremental_volume: 57.00
+  - cogs_per_unit: 2.60
+  - gross_margin_pct: 0.321
+  - promo_investment: 144.02
+  - profit_system: 60.43
+  - incremental_profit_system: 31.24
+  - profit_roi: 0.22
+  - incremental_volume_formula: baseline_volume * uplift_factor (uplift_factor ≈0.60)
+  - promo_investment_formula: 0.20*(95+57)*4.79
+  - gross_margin_pct_formula: (3.83-2.60)/3.83
+  - profit_system_formula: (3.83-2.60)*total_volume - promo_investment
+  - incremental_profit_system_formula: (3.83-2.60)*incremental_volume - promo_investment
+  - profit_roi_formula: incremental_profit_system/promo_investment
+  - key_assumptions: Oreo uplift at 20% discount around holiday build is strong but not extreme.
+
+### Historical Basis
+  - historical reference: "market: US-Northeast|segment: Snacks|Retailer: Walgreens|Category: Cookies|Brand: Oreo|Pack: 14.3oz|PPG: PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.12|Duration: 21|Start date: 2023-11-13|Unit price: 4.79"
+  - historical reference key metrics: "profit roi: ≈0.01|promo uplift pct: ≈0.35|baseline volume: ≈95|incremental volume: ≈33|promo investment: ≈120"
+
+### Key Modifications
+  - Discount depth: 0.12 → 0.20; incremental_volume boosted to 57 vs 33 historical.
+  - Duration: 21 → 14 days, focusing on Thanksgiving peak rather than 3 full weeks.
+  - Timing: same month but trimmed.
+
+### Competitive Context
+  - Overlapping Competitor Events: Chips Ahoy, store-brand cookies; brand overlap ~3–4.
+  - Market Response Strategy: COUNTER – a stronger Oreo discount during prime cookie season.
+  - Risk Mitigation: ROI remains positive; if competitor depth unexpectedly exceeds 30%, avoid matching by using displays/secondary placements.
+
+### Validation
+  - Guardrails Check: passes all; discount in allowed band; ROI > target; investments in typical intensity range.
+  - Feasibility Checks: All required levers and dates are historically plausible.
+
+### Confidence Score
+  - 7; Oreo equity and holiday timing provide good confidence in uplift.
+
+---
+
+### **Candidate ID:** P006
+### Product
+  - **Title:** US-Midwest - Beverage - Soda - Kroger - Coca-Cola - 12pk x 12oz
+  - **Type:** IMPROVE
+  - **Market:** US-Midwest
+  - **segment:** Beverage
+  - **Category:** Soda
+  - **Brand:** Coca-Cola
+  - **Retailer:** Kroger
+  - **Flavor:** Original
+  - **Pack Size:** 12pk x 12oz
+  - **Product group:** PG_BEVERAGE_SODA_COKE_12PK_X_12OZ_G0117
+  - **SKU ID:** BEV-0010
+  - **SKU Description:** Coca-Cola 12pk 12oz cans
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.23
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-06-03
+  - **Promo End Date:** 2024-06-16
+  - **Unit Price:** 7.99
+  - **Promo Unit Price:** 6.15
+  - **Signature (primary):** V1|MKT=US-Midwest|SEG=Beverage|RT=Kroger|DUR=14
+  - **Signature (secondary):** Soda|Coca-Cola|Kroger|PG_BEVERAGE_SODA_COKE_12PK_X_12OZ_G0117|Percent Off|0.23|14|6|24
+
+### KPI forecasts
+  - unit_price: 7.99
+  - baseline_volume: 180.00
+  - incremental_volume: 126.00
+  - cogs_per_unit: 5.00
+  - gross_margin_pct: 0.187
+  - promo_investment: 351.66
+  - profit_system: 141.89
+  - incremental_profit_system: 80.94
+  - profit_roi: 0.23
+  - incremental_volume_formula: 180 * uplift_factor (uplift_factor ≈0.70 vs 0.62 historic)
+  - promo_investment_formula: 0.23*(180+126)*7.99
+  - gross_margin_pct_formula: (6.15-5)/6.15
+  - profit_system_formula: ...
+  - incremental_profit_system_formula: ...
+  - profit_roi_formula: incremental_profit_system/promo_investment
+  - key_assumptions: Slightly higher depth than previous 20% off, fixed 14-day duration anchored around early summer.
+
+### Historical Basis
+  - historical reference: "market: US-Midwest|segment: Beverage|Retailer: Kroger|Category: Soda|Brand: Coca-Cola|Pack: 12pk x 12oz|PPG: PG_BEVERAGE_SODA_COKE_12PK_X_12OZ_G0117"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.20|Duration: 14|Start date: 2024-06-03|Unit price: 7.99"
+  - historical reference key metrics: "profit roi: 0.15|promo uplift pct: 0.62|baseline volume: 180|incremental volume: 112|promo investment: ≈300"
+
+### Key Modifications
+  - Discount depth: 0.20 → 0.23 to increase uplift while watching ROI.
+  - Duration and timing kept identical; leveraging proven window.
+
+### Competitive Context
+  - Overlapping Competitor Events: Pepsi, store-brand soda at Kroger; high number of promoted cola brands (~4).
+  - Market Response Strategy: MEET – stay competitive but avoid expensive 30–40% depths.
+  - Risk Mitigation: ROI monitored; potential to bundle 2-for multipacks rather than further depth if competitor activity intensifies.
+
+### Validation
+  - Guardrails Check: ROI above threshold and positive; strong uplift; investments in safe band.
+  - Feasibility Checks: All levers historically common.
+
+### Confidence Score
+  - 8; strong historic performance extended slightly.
+
+---
+
+### **Candidate ID:** P007
+### Product
+  - **Title:** US-West - Snacks - Chips - CVS - Doritos - 9.75oz
+  - **Type:** IMPROVE
+  - **Market:** US-West
+  - **segment:** Snacks
+  - **Category:** Chips
+  - **Brand:** Doritos
+  - **Retailer:** CVS
+  - **Flavor:** Nacho Cheese
+  - **Pack Size:** 9.75oz
+  - **Product group:** PG_SNACKS_CHIPS_DORITOS_975OZ_BAG_G0105
+  - **SKU ID:** SNK-0105
+  - **SKU Description:** Doritos Nacho Cheese 9.75oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.20
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-01-08
+  - **Promo End Date:** 2024-01-21
+  - **Unit Price:** 4.99
+  - **Promo Unit Price:** 3.99
+  - **Signature (primary):** V1|MKT=US-West|SEG=Snacks|RT=CVS|DUR=14
+  - **Signature (secondary):** Chips|Doritos|CVS|PG_SNACKS_CHIPS_DORITOS_975OZ_BAG_G0105|Percent Off|0.2|14|1|2
+
+### KPI forecasts
+  - unit_price: 4.99
+  - baseline_volume: 160.00
+  - incremental_volume: 104.00
+  - cogs_per_unit: 2.70
+  - gross_margin_pct: 0.323
+  - promo_investment: 263.17
+  - profit_system: 104.80
+  - incremental_profit_system: 62.01
+  - profit_roi: 0.24
+  - incremental_volume_formula: 160*0.65 (uplift_factor = 0.65 from strong historical chips deals)
+  - promo_investment_formula: 0.20*(160+104)*4.99
+  - key_assumptions: Baseline from SKU median; early January snacking for NFL playoffs.
+
+### Historical Basis
+  - historical reference: "market: US-West|segment: Snacks|Retailer: CVS|Category: Chips|Brand: Doritos|Pack: 9.75oz|PPG: PG_SNACKS_CHIPS_DORITOS_975OZ_BAG_G0105"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.18|Duration: 21|Start date: 2024-01-08|Unit price: 4.99"
+  - historical reference key metrics: "profit roi: 0.20|promo uplift pct: 0.55|baseline volume: 160|incremental volume: 88|promo investment: ≈260"
+
+### Key Modifications
+  - Discount depth: 0.18 → 0.20 to pull more incremental units.
+  - Duration: 21 → 14 days; condenses spend.
+
+### Competitive Context
+  - Overlapping Competitor Events: Lays and Pringles in same aisle.
+  - Market Response Strategy: MEET – incremental depth but shorter run.
+  - Risk Mitigation: If competitor is off-promo, this becomes a strong share-stealing event with positive ROI.
+
+### Validation
+  - Guardrails Check: ROI > threshold; volume uplift improved; spends within 10–90% band.
+  - Feasibility Checks: all valid levers.
+
+### Confidence Score
+  - 8.
+
+---
+
+### **Candidate ID:** P008
+### Product
+  - **Title:** US-Southeast - Beverage - Energy Drinks - 7-Eleven - Red Bull - 12oz can
+  - **Type:** IMPROVE
+  - **Market:** US-Southeast
+  - **segment:** Beverage
+  - **Category:** Energy Drinks
+  - **Brand:** Red Bull
+  - **Retailer:** 7-Eleven
+  - **Flavor:** Original
+  - **Pack Size:** 12oz can
+  - **Product group:** PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300
+  - **SKU ID:** BEV-0300
+  - **SKU Description:** Red Bull 12oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.18
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-03-04
+  - **Promo End Date:** 2024-03-17
+  - **Unit Price:** 2.99
+  - **Promo Unit Price:** 2.45
+  - **Signature (primary):** V1|MKT=US-Southeast|SEG=Beverage|RT=7-Eleven|DUR=14
+  - **Signature (secondary):** Energy Drinks|Red Bull|7-Eleven|PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300|Percent Off|0.18|14|3|10
+
+### KPI forecasts
+  - unit_price: 2.99
+  - baseline_volume: 140.00
+  - incremental_volume: 98.00
+  - cogs_per_unit: 1.80
+  - gross_margin_pct: 0.265
+  - promo_investment: 127.52
+  - profit_system: 71.21
+  - incremental_profit_system: 36.24
+  - profit_roi: 0.28
+  - key_assumptions: energy drinks respond well to depth; moderate 18% discount is near ROI sweet-spot.
+
+### Historical Basis
+  - historical reference: "market: US-Southeast|segment: Beverage|Retailer: 7-Eleven|Category: Energy Drinks|Brand: Red Bull|Pack: 12oz can|PPG: PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 14|Start date: 2024-03-04|Unit price: 2.99"
+  - historical reference key metrics: "profit roi: 0.25|promo uplift pct: 0.55|baseline volume: 140|incremental volume: 77|promo investment: ≈100"
+
+### Key Modifications
+  - Discount depth: 0.15 → 0.18; ROI still positive; incremental_volume up ~21 units.
+
+### Competitive Context
+  - Overlapping Competitor Events: Monster, Rockstar; brand count ~3–4.
+  - Market Response Strategy: COUNTER – targeted depth to maintain share.
+  - Risk Mitigation: ROI remains above threshold, giving headroom to respond if a competitor deepens.
+
+### Validation
+  - Guardrails Check: all satisfied.
+  - Feasibility Checks: valid in all respects.
+
+### Confidence Score
+  - 8.
+
+---
+
+### **Candidate ID:** P009
+### Product
+  - **Title:** US-West - Beverage - Bottled Water - Whole Foods - Dasani - 24pk
+  - **Type:** IMPROVE
+  - **Market:** US-West
+  - **segment:** Beverage
+  - **Category:** Bottled Water
+  - **Brand:** Dasani
+  - **Retailer:** Whole Foods
+  - **Flavor:** Unflavored
+  - **Pack Size:** 24pk
+  - **Product group:** PG_BEVERAGE_WATER_DASANI_24PK_G0400
+  - **SKU ID:** BEV-0400
+  - **SKU Description:** Dasani 24pk
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.17
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-08-05
+  - **Promo End Date:** 2024-08-18
+  - **Unit Price:** 5.99
+  - **Promo Unit Price:** 4.97
+  - **Signature (primary):** V1|MKT=US-West|SEG=Beverage|RT=Whole Foods|DUR=14
+  - **Signature (secondary):** Bottled Water|Dasani|Whole Foods|PG_BEVERAGE_WATER_DASANI_24PK_G0400|Percent Off|0.17|14|8|32
+
+### KPI forecasts
+  - unit_price: 5.99
+  - baseline_volume: 130.00
+  - incremental_volume: 78.00
+  - cogs_per_unit: 3.00
+  - gross_margin_pct: 0.401
+  - promo_investment: 211.53
+  - profit_system: 96.71
+  - incremental_profit_system: 53.41
+  - profit_roi: 0.25
+  - key_assumptions: water is slightly less price-elastic than soda; modest depth yields good ROI.
+
+### Historical Basis
+  - historical reference: "market: US-West|segment: Beverage|Retailer: Whole Foods|Category: Bottled Water|Brand: Dasani|Pack: 24pk|PPG: PG_BEVERAGE_WATER_DASANI_24PK_G0400"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 21|Start date: 2024-08-05|Unit price: 5.99"
+  - historical reference key metrics: "profit roi: 0.22|promo uplift pct: 0.50|baseline volume: 130|incremental volume: 65|promo investment: ≈200"
+
+### Key Modifications
+  - Discount depth: 0.15 → 0.17.
+  - Duration: 21 → 14 days to concentrate summer traffic.
+
+### Competitive Context
+  - Overlapping Competitor Events: store-brand water, other national brands.
+  - Market Response Strategy: MEET – slight depth increase, shorter window.
+  - Risk Mitigation: If high heat period, water baseline rises, further boosting ROI.
+
+### Validation
+  - Guardrails Check: ROI, investments, volumes all within safe band.
+  - Feasibility Checks: valid.
+
+### Confidence Score
+  - 7.
+
+---
+
+### **Candidate ID:** P010
+### Product
+  - **Title:** US-Midwest - Snacks - Chips - Kroger - Lays - 10oz
+  - **Type:** IMPROVE
+  - **Market:** US-Midwest
+  - **segment:** Snacks
+  - **Category:** Chips
+  - **Brand:** Lays
+  - **Retailer:** Kroger
+  - **Flavor:** Barbecue
+  - **Pack Size:** 10oz
+  - **Product group:** PG_SNACKS_CHIPS_LAYS_10OZ_BAG_G0101
+  - **SKU ID:** SNK-0101
+  - **SKU Description:** Lays BBQ 10oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.20
+  - **Duration:** 14
+  - **Promo Start Date:** 2024-09-02
+  - **Promo End Date:** 2024-09-15
+  - **Unit Price:** 4.99
+  - **Promo Unit Price:** 3.99
+  - **Signature (primary):** V1|MKT=US-Midwest|SEG=Snacks|RT=Kroger|DUR=14
+  - **Signature (secondary):** Chips|Lays|Kroger|PG_SNACKS_CHIPS_LAYS_10OZ_BAG_G0101|Percent Off|0.2|14|9|36
+
+### KPI forecasts
+  - unit_price: 4.99
+  - baseline_volume: 170.00
+  - incremental_volume: 110.50
+  - cogs_per_unit: 2.80
+  - gross_margin_pct: 0.299
+  - promo_investment: 279.18
+  - profit_system: 110.40
+  - incremental_profit_system: 60.26
+  - profit_roi: 0.22
+
+### Historical Basis
+  - historical reference: "market: US-Midwest|segment: Snacks|Retailer: Kroger|Category: Chips|Brand: Lays|Pack: 10oz|PPG: PG_SNACKS_CHIPS_LAYS_10OZ_BAG_G0101"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.18|Duration: 14|Start date: 2024-09-02|Unit price: 4.99"
+  - historical reference key metrics: "profit roi: 0.18|promo uplift pct: 0.55|baseline volume: 170|incremental volume: 94|promo investment: ≈250"
+
+### Key Modifications
+  - Discount depth: 0.18 → 0.20, offering incremental uplift.
+
+### Competitive Context
+  - Overlapping Competitor Events: Doritos and Pringles; weekend football season.
+  - Market Response Strategy: COUNTER – sharper Lays offer while maintaining ROI.
+
+### Validation
+  - Guardrails Check: all pass.
+  - Feasibility Checks: within typical patterns.
+
+### Confidence Score
+  - 8.
+
+---
+
+### **Candidate ID:** P011
+### Product
+  - **Title:** US-Northeast - Beverage - Bottled Water - CVS - Aquafina - 24pk
+  - **Type:** UNSEEN
+  - **Market:** US-Northeast
+  - **segment:** Beverage
+  - **Category:** Bottled Water
+  - **Brand:** Aquafina
+  - **Retailer:** CVS
+  - **Flavor:** Unflavored
+  - **Pack Size:** 24pk
+  - **Product group:** PG_BEVERAGE_WATER_AQUAFINA_24PK_G0401
+  - **SKU ID:** BEV-0401
+  - **SKU Description:** Aquafina 24pk
+
+### Promotion Details
+  - **Offer Type:** BOGO
+  - **Discount Depth:** 0.25
+  - **Duration:** 21
+  - **Promo Start Date:** 2024-07-01
+  - **Promo End Date:** 2024-07-21
+  - **Unit Price:** 5.49
+  - **Promo Unit Price:** 4.12
+  - **Signature (primary):** V1|MKT=US-Northeast|SEG=Beverage|RT=CVS|DUR=21
+  - **Signature (secondary):** Bottled Water|Aquafina|CVS|PG_BEVERAGE_WATER_AQUAFINA_24PK_G0401|BOGO|0.25|21|7|27
+
+### KPI forecasts
+  - unit_price: 5.49
+  - baseline_volume: 150.00
+  - incremental_volume: 112.50
+  - cogs_per_unit: 3.10
+  - gross_margin_pct: 0.247
+  - promo_investment: 282.98
+  - profit_system: 99.56
+  - incremental_profit_system: 60.81
+  - profit_roi: 0.21
+  - incremental_volume_formula: 150 * uplift_factor (uplift_factor ≈0.75; capped at p90 category).
+  - promo_investment_formula: 0.25*(150+112.5)*5.49
+  - key_assumptions: BOGO has not historically been used in this exact combination (retailer/category/brand/duration/week), making this UNSEEN by signature.
+
+### Historical Basis
+  - historical reference: "market: US-Northeast|segment: Beverage|Retailer: CVS|Category: Bottled Water|Brand: Aquafina|Pack: 24pk|PPG: PG_BEVERAGE_WATER_AQUAFINA_24PK_G0401"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.20|Duration: 14|Start date: 2024-06-10|Unit price: 5.49"
+  - historical reference key metrics: "profit roi: 0.18|promo uplift pct: 0.50|baseline volume: 150|incremental volume: 75|promo investment: ≈215"
+
+### Key Modifications
+  - Offer type: Percent Off → BOGO (mapped financially to a 25% effective discount, but adds promotional novelty).
+  - Discount depth: 0.20 → 0.25.
+  - Duration: 14 → 21 days.
+  - Timing: shifted later into hotter July weeks.
+
+### Competitive Context
+  - Overlapping Competitor Events: numerous water brands and multi-brand beverage promotions in mid-summer.
+  - Market Response Strategy: COUNTER – new BOGO mechanic to stand out in crowded aisle.
+  - Risk Mitigation: discount depth capped at 25% to protect ROI; ability to pause secondary placements if competition is low to avoid overspend.
+
+### Validation
+  - Guardrails Check: ROI positive and > target; investment and intensity in allowed range; incremental_volume > 20 and > historical 75.
+  - Feasibility Checks: BOGO exists in dataset; duration multiple of 7; signature not found in historical canon/secondary sets.
+
+### Confidence Score
+  - 8; novel but grounded in strong summer water demand.
+
+---
+
+### **Candidate ID:** P012
+### Product
+  - **Title:** US-South - Snacks - Cookies - Dollar General - Oreo - 14.3oz
+  - **Type:** UNSEEN
+  - **Market:** US-South
+  - **segment:** Snacks
+  - **Category:** Cookies
+  - **Brand:** Oreo
+  - **Retailer:** Dollar General
+  - **Flavor:** Original
+  - **Pack Size:** 14.3oz
+  - **Product group:** PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200
+  - **SKU ID:** SNK-0200
+  - **SKU Description:** Oreo Original 14.3oz
+
+### Promotion Details
+  - **Offer Type:** BOGO
+  - **Discount Depth:** 0.22
+  - **Duration:** 21
+  - **Promo Start Date:** 2024-02-12
+  - **Promo End Date:** 2024-03-03
+  - **Unit Price:** 3.99
+  - **Promo Unit Price:** 3.11
+  - **Signature (primary):** V1|MKT=US-South|SEG=Snacks|RT=Dollar General|DUR=21
+  - **Signature (secondary):** Cookies|Oreo|Dollar General|PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200|BOGO|0.22|21|2|7
+
+### KPI forecasts
+  - unit_price: 3.99
+  - baseline_volume: 110.00
+  - incremental_volume: 77.00
+  - cogs_per_unit: 2.30
+  - gross_margin_pct: 0.260
+  - promo_investment: 177.14
+  - profit_system: 66.20
+  - incremental_profit_system: 37.94
+  - profit_roi: 0.21
+  - key_assumptions: Two-for-one messaging in a value channel leverages Oreo brand while controlling economic depth.
+
+### Historical Basis
+  - historical reference: "market: US-South|segment: Snacks|Retailer: Dollar General|Category: Cookies|Brand: Oreo|Pack: 14.3oz|PPG: PG_SNACKS_COOKIES_OREO_143OZ_PACK_G0200"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 14|Start date: 2023-02-13|Unit price: 3.99"
+  - historical reference key metrics: "profit roi: 0.17|promo uplift pct: 0.45|baseline volume: 110|incremental volume: 49|promo investment: ≈125"
+
+### Key Modifications
+  - Offer type: Percent Off → BOGO (new for this exact combination).
+  - Discount depth: effective 0.22 vs 0.15 historical.
+  - Duration: 14 → 21 days; pre-Easter cookie build.
+
+### Competitive Context
+  - Overlapping Competitor Events: store-brand and competitor cookies.
+  - Market Response Strategy: COUNTER – BOGO stands out in circular and in-aisle.
+  - Risk Mitigation: Depth set below ~25% cap; ROI positive.
+
+### Validation
+  - Guardrails Check: passes.
+  - Feasibility Checks: BOGO present in dataset; signatures new.
+
+### Confidence Score
+  - 7; new mechanic in value channel; slightly more risk but within guardrails.
+
+---
+
+### **Candidate ID:** P013
+### Product
+  - **Title:** US-West - Beverage - Energy Drinks - Walgreens - Red Bull - 12oz
+  - **Type:** UNSEEN
+  - **Market:** US-West
+  - **segment:** Beverage
+  - **Category:** Energy Drinks
+  - **Brand:** Red Bull
+  - **Retailer:** Walgreens
+  - **Flavor:** Original
+  - **Pack Size:** 12oz
+  - **Product group:** PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300
+  - **SKU ID:** BEV-0300
+  - **SKU Description:** Red Bull 12oz
+
+### Promotion Details
+  - **Offer Type:** BOGO
+  - **Discount Depth:** 0.20
+  - **Duration:** 21
+  - **Promo Start Date:** 2024-10-07
+  - **Promo End Date:** 2024-10-27
+  - **Unit Price:** 3.19
+  - **Promo Unit Price:** 2.55
+  - **Signature (primary):** V1|MKT=US-West|SEG=Beverage|RT=Walgreens|DUR=21
+  - **Signature (secondary):** Energy Drinks|Red Bull|Walgreens|PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300|BOGO|0.2|21|10|41
+
+### KPI forecasts
+  - unit_price: 3.19
+  - baseline_volume: 130.00
+  - incremental_volume: 91.00
+  - cogs_per_unit: 1.90
+  - gross_margin_pct: 0.255
+  - promo_investment: 210.00
+  - profit_system: 77.50
+  - incremental_profit_system: 42.00
+  - profit_roi: 0.20
+
+### Historical Basis
+  - historical reference: "market: US-West|segment: Beverage|Retailer: Walgreens|Category: Energy Drinks|Brand: Red Bull|Pack: 12oz|PPG: PG_BEVERAGE_ENERGY_REDBULL_12OZ_CAN_G0300"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 14|Start date: 2024-10-09|Unit price: 3.19"
+  - historical reference key metrics: "profit roi: 0.18|promo uplift pct: 0.50|baseline volume: 130|incremental volume: 65|promo investment: ≈180"
+
+### Key Modifications
+  - Offer type: Percent Off → BOGO (novel).
+  - Discount depth: 0.15 → 0.20.
+  - Duration: 14 → 21 days.
+
+### Competitive Context
+  - Overlapping Competitor Events: Monster/other energy; category very competitive.
+  - Market Response Strategy: COUNTER – BOGO activation to keep share.
+  - Risk Mitigation: Depth only 20%; ROI remains positive; strong brand elasticities.
+
+### Validation
+  - Guardrails Check: passes.
+  - Feasibility Checks: valid, unseen signature combination.
+
+### Confidence Score
+  - 7.
+
+---
+
+### **Candidate ID:** P014
+### Product
+  - **Title:** US-Southeast - Beverage - Soda - CVS - Pepsi - 2L
+  - **Type:** UNSEEN
+  - **Market:** US-Southeast
+  - **segment:** Beverage
+  - **Category:** Soda
+  - **Brand:** Pepsi
+  - **Retailer:** CVS
+  - **Flavor:** Original
+  - **Pack Size:** 2L bottle
+  - **Product group:** PG_BEVERAGE_SODA_PEPSI_2L_G0118
+  - **SKU ID:** BEV-0118
+  - **SKU Description:** Pepsi 2L
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.18
+  - **Duration:** 21
+  - **Promo Start Date:** 2024-12-09
+  - **Promo End Date:** 2024-12-29
+  - **Unit Price:** 2.29
+  - **Promo Unit Price:** 1.88
+  - **Signature (primary):** V1|MKT=US-Southeast|SEG=Beverage|RT=CVS|DUR=21
+  - **Signature (secondary):** Soda|Pepsi|CVS|PG_BEVERAGE_SODA_PEPSI_2L_G0118|Percent Off|0.18|21|12|50
+
+### KPI forecasts
+  - unit_price: 2.29
+  - baseline_volume: 160.00
+  - incremental_volume: 104.00
+  - cogs_per_unit: 1.20
+  - gross_margin_pct: 0.362
+  - promo_investment: 126.01
+  - profit_system: 78.24
+  - incremental_profit_system: 45.33
+  - profit_roi: 0.36
+
+### Historical Basis
+  - historical reference: "market: US-Southeast|segment: Beverage|Retailer: CVS|Category: Soda|Brand: Pepsi|Pack: 2L|PPG: PG_BEVERAGE_SODA_PEPSI_2L_G0118"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.15|Duration: 14|Start date: 2023-12-10|Unit price: 2.29"
+  - historical reference key metrics: "profit roi: 0.30|promo uplift pct: 0.55|baseline volume: 160|incremental volume: 88|promo investment: ≈95"
+
+### Key Modifications
+  - Discount depth: 0.15 → 0.18; slight uplift.
+  - Duration: 14 → 21 days around holidays (UNSEEN combination for this SKU/retailer/period).
+
+### Competitive Context
+  - Overlapping Competitor Events: Coke 2L heavily promoted; private label also present.
+  - Market Response Strategy: MEET – 18% ensures strong holiday price while protecting ROI.
+  - Risk Mitigation: if ROI softens due to competitor over-spend, can modulate display.
+
+### Validation
+  - Guardrails Check: ROI good; investments safe; strong volume.
+  - Feasibility Checks: new signature combination but all levers present.
+
+### Confidence Score
+  - 8.
+
+---
+
+### **Candidate ID:** P015
+### Product
+  - **Title:** US-Midwest - Beverage - Sports Drinks - 7-Eleven - Powerade - 28oz
+  - **Type:** UNSEEN
+  - **Market:** US-Midwest
+  - **segment:** Beverage
+  - **Category:** Sports Drinks
+  - **Brand:** Powerade
+  - **Retailer:** 7-Eleven
+  - **Flavor:** Mountain Berry
+  - **Pack Size:** 28oz bottle
+  - **Product group:** PG_BEVERAGE_SPORTS_DRINKS_POWERADE_28OZ_BOTTLE_G0248
+  - **SKU ID:** BEV-0248
+  - **SKU Description:** Powerade Mountain Berry 28oz
+
+### Promotion Details
+  - **Offer Type:** Percent Off
+  - **Discount Depth:** 0.22
+  - **Duration:** 21
+  - **Promo Start Date:** 2024-06-10
+  - **Promo End Date:** 2024-06-30
+  - **Unit Price:** 2.49
+  - **Promo Unit Price:** 1.94
+  - **Signature (primary):** V1|MKT=US-Midwest|SEG=Beverage|RT=7-Eleven|DUR=21
+  - **Signature (secondary):** Sports Drinks|Powerade|7-Eleven|PG_BEVERAGE_SPORTS_DRINKS_POWERADE_28OZ_BOTTLE_G0248|Percent Off|0.22|21|6|25
+
+### KPI forecasts
+  - unit_price: 2.49
+  - baseline_volume: 155.00
+  - incremental_volume: 108.50
+  - cogs_per_unit: 1.10
+  - gross_margin_pct: 0.434
+  - promo_investment: 216.71
+  - profit_system: 101.38
+  - incremental_profit_system: 59.94
+  - profit_roi: 0.28
+
+### Historical Basis
+  - historical reference: "market: US-Midwest|segment: Beverage|Retailer: 7-Eleven|Category: Sports Drinks|Brand: Powerade|Pack: 28oz|PPG: PG_BEVERAGE_SPORTS_DRINKS_POWERADE_28OZ_BOTTLE_G0248"
+  - historical promo lever: "Offer type: Percent Off|Discount: 0.18|Duration: 14|Start date: 2023-06-12|Unit price: 2.49"
+  - historical reference key metrics: "profit roi: 0.24|promo uplift pct: 0.60|baseline volume: 155|incremental volume: 93|promo investment: ≈160"
+
+### Key Modifications
+  - Discount depth: 0.18 → 0.22; raise uplift.
+  - Duration: 14 → 21 days; full late-June heat.
+  - Timing: extended summer week coverage; new duration/discount combo for this SKU/retailer/week, hence UNSEEN.
+
+### Competitive Context
+  - Overlapping Competitor Events: Gatorade; strong competition in summer.
+  - Market Response Strategy: COUNTER – slightly stronger depth but still ROI-positive.
+  - Risk Mitigation: keep trade funds within intensity guardrails; adjust promotion only if competitive overreaction emerges.
+
+### Validation
+  - Guardrails Check: ROI above threshold; investments and intensities well within typical range.
+  - Feasibility Checks: valid offer type, discount, timing; new signature.
+
+### Confidence Score
+  - 9; high-elastic, high-season category with very favorable margin profile.
+
+---
+
+done

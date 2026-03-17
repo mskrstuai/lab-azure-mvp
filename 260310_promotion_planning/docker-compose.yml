@@ -1,0 +1,41 @@
+# Promotion Planning - Full stack with Run Analysis
+# Run: docker-compose up -d
+# Backend: http://localhost:8001
+# Executor: http://localhost:8000 (internal)
+# Frontend: npm run dev (from frontend/)
+
+version: "3.8"
+
+services:
+  executor:
+    build:
+      context: ./executor
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=local
+      - EXECUTOR_USERNAME=${EXECUTOR_USERNAME:-executor}
+      - EXECUTOR_PASSWORD=${EXECUTOR_PASSWORD:-executor-secret}
+    volumes:
+      - ./backend/data:/app/data:ro
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - ENVIRONMENT=local
+      - EXECUTOR_URL=http://executor:8000
+      - EXECUTOR_USERNAME=${EXECUTOR_USERNAME:-executor}
+      - EXECUTOR_PASSWORD=${EXECUTOR_PASSWORD:-executor-secret}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      - AZURE_OPENAI_EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT}
+    volumes:
+      - ./backend/data:/app/data:ro
+      - ./backend/outputs:/app/outputs:rw
+    depends_on:
+      - executor
