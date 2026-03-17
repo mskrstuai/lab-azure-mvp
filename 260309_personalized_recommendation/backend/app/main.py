@@ -14,7 +14,10 @@ load_dotenv(dotenv_path=_env_path)
 _log_level = os.getenv("LOG_LEVEL", "INFO")
 _level = getattr(logging, _log_level.upper(), logging.INFO)
 logging.basicConfig(level=_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
-logging.getLogger("semantic_kernel").setLevel(_level)
+
+_sk_log_level = os.getenv("SK_LOG_LEVEL", "DEBUG")
+_sk_level = getattr(logging, _sk_log_level.upper(), logging.DEBUG)
+logging.getLogger("semantic_kernel").setLevel(_sk_level)
 logging.getLogger("azure").setLevel(logging.WARNING)
 
 from fastapi.middleware.cors import CORSMiddleware

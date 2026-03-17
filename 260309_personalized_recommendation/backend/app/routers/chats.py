@@ -37,6 +37,11 @@ def _search_result_to_chat_item(result):
         product_type_name=doc.get("ProductTypeName"),
         colour_group_name=doc.get("ColourGroupName"),
         image_url=image_url,
+        rs_model=getattr(result, "rs_model", None),
+        rs_score=getattr(result, "rs_score", None),
+        search_rank=getattr(result, "search_rank", None),
+        rs_rank=getattr(result, "rs_rank", None),
+        final_rank=getattr(result, "final_rank", None),
     )
 
 
@@ -49,6 +54,7 @@ async def send_message(body: schemas.ChatMessage):
     reply = await agent.chat(body.message)
 
     search_results = None
+    search_info = None
     last_turn = agent.search_memory.last_turn
     if last_turn and not last_turn.was_clarification_only:
         results = last_turn.get_all_results_deduplicated()
@@ -60,7 +66,23 @@ async def send_message(body: schemas.ChatMessage):
                     items.append(item)
             search_results = items if items else None
 
-    return schemas.ChatResponse(reply=reply, search_results=search_results)
+        if last_turn.searches:
+            search_info = []
+            for s in last_turn.searches:
+                args = s.function_arguments or {}
+                search_info.append(
+                    schemas.ChatSearchInfo(
+                        function=s.function_name,
+                        enriched_query=args.get("query"),
+                        item_detection_filter=args.get("item_detection_filter"),
+                        use_rs_candidate_filter=args.get("use_rs_candidate_filter"),
+                        result_count=s.result_count,
+                    )
+                )
+
+    return schemas.ChatResponse(
+        reply=reply, search_results=search_results, search_info=search_info
+    )
 
 
 @router.delete("")

@@ -83,7 +83,24 @@ class ChatSearchResult(BaseModel):
     colour_group_name: Optional[str] = None
     image_url: Optional[str] = None
 
+    rs_model: Optional[str] = None
+    rs_score: Optional[float] = None
+    search_rank: Optional[int] = None
+    rs_rank: Optional[int] = None
+    final_rank: Optional[int] = None
+
+
+class ChatSearchInfo(BaseModel):
+    """Metadata about the search the agent performed (enriched query, filters, etc.)."""
+
+    function: str
+    enriched_query: Optional[str] = None
+    item_detection_filter: Optional[str] = None
+    use_rs_candidate_filter: Optional[bool] = None
+    result_count: int = 0
+
 
 class ChatResponse(BaseModel):
     reply: str
     search_results: Optional[list[ChatSearchResult]] = None
+    search_info: Optional[list[ChatSearchInfo]] = None

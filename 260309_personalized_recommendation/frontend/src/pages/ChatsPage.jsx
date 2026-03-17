@@ -38,42 +38,152 @@ function CustomerPreferencesPanel({ customerId, preferences, onClose }) {
   );
 }
 
+function ChatSearchInfo({ searchInfo }) {
+  const [open, setOpen] = useState(false);
+  if (!searchInfo || searchInfo.length === 0) return null;
+
+  const mainSearch = searchInfo.find((s) => s.function === "search_products");
+  const detection = searchInfo.find((s) => s.function === "item_detection");
+
+  if (!mainSearch && !detection) return null;
+
+  return (
+    <div className="chat-search-info">
+      <button
+        type="button"
+        className="chat-search-info-toggle"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="chat-search-info-icon">{open ? "▾" : "▸"}</span>
+        <span className="chat-search-info-label">Enriched Query</span>
+        {mainSearch?.enriched_query && !open && (
+          <span className="chat-search-info-preview">
+            {mainSearch.enriched_query.length > 60
+              ? mainSearch.enriched_query.slice(0, 60) + "…"
+              : mainSearch.enriched_query}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="chat-search-info-details">
+          {mainSearch?.enriched_query && (
+            <div className="chat-search-info-row">
+              <span className="chat-search-info-key">Search Query</span>
+              <span className="chat-search-info-value">{mainSearch.enriched_query}</span>
+            </div>
+          )}
+          {mainSearch?.item_detection_filter && (
+            <div className="chat-search-info-row">
+              <span className="chat-search-info-key">Item Filter</span>
+              <span className="chat-search-info-value code">{mainSearch.item_detection_filter}</span>
+            </div>
+          )}
+          {mainSearch?.use_rs_candidate_filter != null && (
+            <div className="chat-search-info-row">
+              <span className="chat-search-info-key">RS Candidate Filter</span>
+              <span className="chat-search-info-value">
+                {mainSearch.use_rs_candidate_filter ? "Yes" : "No"}
+              </span>
+            </div>
+          )}
+          {mainSearch?.result_count != null && (
+            <div className="chat-search-info-row">
+              <span className="chat-search-info-key">Results</span>
+              <span className="chat-search-info-value">{mainSearch.result_count}</span>
+            </div>
+          )}
+          {detection && (
+            <div className="chat-search-info-row">
+              <span className="chat-search-info-key">Item Detection</span>
+              <span className="chat-search-info-value code">
+                {detection.enriched_query || "—"}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const RS_MODEL_LABELS = {
+  als_cf: "ALS",
+  two_stage: "2-Stage",
+};
+
 function ChatSearchResults({ results }) {
   if (!results || results.length === 0) return null;
+
+  const hasRanking = results.some((r) => r.rs_model);
+
   return (
     <div className="chat-search-results">
-      <h4 className="chat-search-results-title">Search Results ({results.length} items)</h4>
+      <h4 className="chat-search-results-title">
+        Search Results ({results.length} items)
+        {hasRanking && <span className="chat-search-results-reranked">RS Reranked</span>}
+      </h4>
       <div className="chat-search-results-grid">
-        {results.map((item) => (
-          <div key={item.article_id} className="chat-search-result-card">
-            <div className="chat-search-result-img-wrap">
-              {item.image_url ? (
-                <>
-                  <img
-                    src={`${API_SERVER_URL}${item.image_url}`}
-                    alt={item.prod_name || item.article_id}
-                    className="chat-search-result-img"
-                    onError={(e) => {
-                      e.target.style.display = "none";
-                      e.target.nextElementSibling?.classList.add("visible");
-                    }}
-                  />
-                  <div className="chat-search-result-placeholder">No image</div>
-                </>
-              ) : (
-                <div className="chat-search-result-placeholder visible">No image</div>
-              )}
-            </div>
-            <div className="chat-search-result-info">
-              <div className="chat-search-result-name" title={item.prod_name}>
-                {item.prod_name || "Unknown"}
+        {results.map((item, idx) => {
+          const modelLabel = item.rs_model ? RS_MODEL_LABELS[item.rs_model] || item.rs_model : null;
+          const rankChanged = item.search_rank != null && item.final_rank != null && item.search_rank !== item.final_rank;
+          const rankDelta = rankChanged ? item.search_rank - item.final_rank : 0;
+
+          return (
+            <div key={item.article_id} className="chat-search-result-card">
+              <div className="chat-search-result-img-wrap">
+                {modelLabel && (
+                  <span className={`chat-rs-badge chat-rs-badge--${item.rs_model}`}>
+                    {modelLabel}
+                  </span>
+                )}
+                {rankChanged && (
+                  <span className={`chat-rank-delta ${rankDelta > 0 ? "up" : "down"}`}>
+                    {rankDelta > 0 ? `+${rankDelta}` : rankDelta}
+                  </span>
+                )}
+                {item.image_url ? (
+                  <>
+                    <img
+                      src={`${API_SERVER_URL}${item.image_url}`}
+                      alt={item.prod_name || item.article_id}
+                      className="chat-search-result-img"
+                      onError={(e) => {
+                        e.target.style.display = "none";
+                        e.target.nextElementSibling?.classList.add("visible");
+                      }}
+                    />
+                    <div className="chat-search-result-placeholder">No image</div>
+                  </>
+                ) : (
+                  <div className="chat-search-result-placeholder visible">No image</div>
+                )}
               </div>
-              <div className="chat-search-result-meta">{item.product_type_name}</div>
-              <div className="chat-search-result-meta colour">{item.colour_group_name}</div>
-              <div className="chat-search-result-id">ID: {item.article_id}</div>
+              <div className="chat-search-result-info">
+                <div className="chat-search-result-name" title={item.prod_name}>
+                  {item.prod_name || "Unknown"}
+                </div>
+                <div className="chat-search-result-meta">{item.product_type_name}</div>
+                <div className="chat-search-result-meta colour">{item.colour_group_name}</div>
+                <div className="chat-search-result-id">ID: {item.article_id}</div>
+                {item.final_rank != null && (
+                  <div className="chat-search-result-ranks">
+                    #{item.final_rank}
+                    {item.search_rank != null && (
+                      <span className="chat-search-result-rank-detail">
+                        search: #{item.search_rank}
+                      </span>
+                    )}
+                    {item.rs_rank != null && (
+                      <span className="chat-search-result-rank-detail">
+                        rs: #{item.rs_rank}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -161,6 +271,7 @@ function ChatsPage() {
           sender: "assistant",
           text: data.reply,
           searchResults: data.search_results || null,
+          searchInfo: data.search_info || null,
         },
       ]);
     } catch {
@@ -231,6 +342,9 @@ function ChatsPage() {
                 <div className="chat-text-content">
                   <ReactMarkdown remarkPlugins={[remarkBreaks]}>{msg.text}</ReactMarkdown>
                 </div>
+                {msg.sender === "assistant" && msg.searchInfo && (
+                  <ChatSearchInfo searchInfo={msg.searchInfo} />
+                )}
                 {msg.sender === "assistant" && msg.searchResults && (
                   <ChatSearchResults results={msg.searchResults} />
                 )}
