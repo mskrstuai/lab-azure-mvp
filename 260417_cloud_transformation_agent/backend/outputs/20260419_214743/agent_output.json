@@ -1,0 +1,235 @@
+{
+  "summary": "Migrate the AWS three-tier web architecture into a single Azure Resource Group named ThreeTierWebArch in eastus, preserving the logical tiers: public web ingress, private app tier, and managed database tier. The closest managed Azure mapping is Application Gateway for the public/internal ALBs, Linux Virtual Machine Scale Sets for the web and app launch-template-based tiers, Azure Virtual Network with six subnets mirroring the AWS layout, NAT Gateway for private egress, Azure Database for PostgreSQL Flexible Server as the managed Aurora-compatible target, Key Vault for secret storage, and Azure Monitor/Log Analytics for observability. Because key AWS details such as CIDRs, listener ports, AMI/OS, autoscaling settings, and Aurora engine are not provided, the Terraform module uses safe defaults and variables so it validates and can be adapted with discovered values before cutover.",
+  "assessment": "Complexity is moderate: the topology is standard three-tier, but successful migration depends on missing configuration details from the launch templates, security groups, ALB listeners/health probes, and Aurora engine/schema. Prerequisites include Azure subscription access, Azure CLI login, Terraform 1.5+, and decisions on connectivity/cutover strategy. To minimize downtime, use parallel deployment in Azure, database replication or logical migration to Azure Database, staged application validation, DNS cutover, and rollback planning. Identity/role mappings from AWS IAM roles should be translated to managed identities and Azure RBAC after application permission requirements are confirmed.",
+  "steps": [
+    {
+      "phase": "Discover",
+      "description": "Inventory the AWS launch templates, ALB listeners, target groups, security group rules, subnet CIDRs, route behavior, Aurora engine/version, database size, and application secrets. Confirm whether the two ALBs represent internet-facing web ingress and internal app ingress, and whether EC2 instances are Linux-based and stateless.",
+      "aws_components": [
+        "EC2 LaunchTemplate",
+        "ELB LoadBalancer",
+        "ELB Listener",
+        "ELB TargetGroup",
+        "EC2 SecurityGroup",
+        "EC2 Subnet",
+        "EC2 RouteTable",
+        "RDS Cluster",
+        "Secrets Manager Secret",
+        "IAM Role"
+      ],
+      "azure_targets": [
+        "Azure VM Scale Sets",
+        "Application Gateway",
+        "Network Security Groups",
+        "Azure Database for PostgreSQL Flexible Server",
+        "Key Vault",
+        "Managed Identity"
+      ],
+      "notes": "This phase fills the gaps required to finalize ports, health probes, autoscaling, image selection, and DB engine mapping. Export current app configuration and dependency graph before building Azure equivalents."
+    },
+    {
+      "phase": "Design",
+      "description": "Create an Azure landing zone in one resource group with a VNet and six subnets aligned to public, app, and database tiers across two availability zones where possible. Place a public Application Gateway in the public subnet, an internal Application Gateway or internal Load Balancer for app-tier east-west ingress if required, VM Scale Sets for web and app tiers in private subnets, NAT Gateway for outbound internet from private subnets, and a private managed database in dedicated DB subnets. Add NSGs, private DNS, Key Vault, Log Analytics, and monitoring alerts.",
+      "aws_components": [
+        "VPC",
+        "Subnet",
+        "InternetGateway",
+        "Natgateway",
+        "RouteTable",
+        "SecurityGroup",
+        "ELB LoadBalancer",
+        "LaunchTemplate",
+        "RDS Cluster",
+        "Secrets Manager"
+      ],
+      "azure_targets": [
+        "Virtual Network",
+        "Subnets",
+        "NAT Gateway",
+        "Route Tables",
+        "Network Security Groups",
+        "Application Gateway",
+        "Linux VM Scale Sets",
+        "Azure Database for PostgreSQL Flexible Server",
+        "Private DNS Zone",
+        "Key Vault",
+        "Log Analytics Workspace"
+      ],
+      "notes": "Azure does not use an Internet Gateway resource; internet exposure is via public IPs on Application Gateway and outbound via NAT Gateway. If the internal ALB is only app-tier balancing, an internal Application Gateway v2 is a good L7 match."
+    },
+    {
+      "phase": "Build",
+      "description": "Deploy the Azure foundation and platform services with Terraform. Parameterize all unknown values such as CIDRs, ports, VM image, admin credentials, and database settings. Store generated or supplied secrets in Key Vault and enable diagnostics to Log Analytics.",
+      "aws_components": [
+        "All in-scope resources"
+      ],
+      "azure_targets": [
+        "Resource Group",
+        "VNet",
+        "Subnets",
+        "NSGs",
+        "Route Tables",
+        "NAT Gateway",
+        "Application Gateways",
+        "VM Scale Sets",
+        "Azure Database",
+        "Key Vault",
+        "Azure Monitor"
+      ],
+      "notes": "The provided Terraform module is intentionally safe and generic so it validates immediately and can be refined with discovered workload specifics."
+    },
+    {
+      "phase": "Data Migration",
+      "description": "Migrate Aurora to Azure Database using the appropriate engine-compatible path. For Aurora PostgreSQL, use Azure Database for PostgreSQL Flexible Server with pg_dump/pg_restore, DMS, or logical replication. For Aurora MySQL, switch to Azure Database for MySQL Flexible Server and use MySQL replication or dump/restore. Keep source and target in sync until cutover.",
+      "aws_components": [
+        "RDS Cluster",
+        "RDS DBInstance",
+        "Secrets Manager Secret"
+      ],
+      "azure_targets": [
+        "Azure Database for PostgreSQL Flexible Server or Azure Database for MySQL Flexible Server",
+        "Key Vault"
+      ],
+      "notes": "The Terraform defaults to PostgreSQL Flexible Server because Aurora engine was not provided. Change the module if discovery confirms MySQL."
+    },
+    {
+      "phase": "Application Migration",
+      "description": "Bake or configure Azure-compatible images for the web and app tiers, deploy to VM Scale Sets, attach backend pools, configure health probes and listener rules, and validate private connectivity from web to app and app to database. Replace AWS IAM role assumptions with managed identity and Azure RBAC where the application integrates with Azure services.",
+      "aws_components": [
+        "LaunchTemplate",
+        "IAM Role",
+        "TargetGroup",
+        "Listener"
+      ],
+      "azure_targets": [
+        "VM Scale Sets",
+        "Application Gateway backend pools",
+        "Managed Identity",
+        "Role Assignments"
+      ],
+      "notes": "If the application is containerized or can be modernized, AKS or Azure Container Apps may be considered later, but VMSS is the closest migration target for EC2 launch templates."
+    },
+    {
+      "phase": "Validate",
+      "description": "Run functional, performance, and security validation: HTTP/HTTPS reachability, health probe success, autoscale behavior, outbound internet from private tiers via NAT, DB connectivity, secret retrieval from Key Vault, and log/metric visibility in Azure Monitor.",
+      "aws_components": [
+        "ALB",
+        "EC2",
+        "RDS",
+        "Security Groups"
+      ],
+      "azure_targets": [
+        "Application Gateway",
+        "VM Scale Sets",
+        "Azure Database",
+        "NSGs",
+        "Azure Monitor"
+      ],
+      "notes": "Validation criteria: public endpoint returns expected app response, internal app path is reachable only from allowed subnets, DB is private-only, and no tier requires direct public IP except ingress."
+    },
+    {
+      "phase": "Cutover",
+      "description": "Lower DNS TTL, perform final database sync, switch application endpoints to Azure, monitor error rates and latency, and keep AWS resources available for rollback during a defined observation window.",
+      "aws_components": [
+        "Route53 if used externally",
+        "ALB",
+        "RDS"
+      ],
+      "azure_targets": [
+        "Azure DNS if adopted",
+        "Application Gateway public IP/DNS",
+        "Azure Database"
+      ],
+      "notes": "Because Route53 resources were not listed, DNS ownership and cutover mechanism must be confirmed. Use blue/green or canary if the application supports it."
+    },
+    {
+      "phase": "Operate",
+      "description": "Enable backup, patching, alerting, and DR controls. Use Azure Backup where applicable for VMs, automated backups for the managed database, zone redundancy where supported, and document runbooks for scaling and failover.",
+      "aws_components": [
+        "CloudWatch equivalent not listed but implied",
+        "RDS backups"
+      ],
+      "azure_targets": [
+        "Azure Monitor",
+        "Log Analytics",
+        "Backup policies",
+        "Database backups",
+        "Availability Zones"
+      ],
+      "notes": "Add Defender for Cloud, update management, and policy guardrails in the broader landing zone if this moves beyond a workshop environment."
+    }
+  ],
+  "risks": [
+    {
+      "category": "Data",
+      "detail": "Aurora engine/version is unknown, so the selected Azure managed database may be incorrect or require schema/feature changes.",
+      "mitigation": "Confirm Aurora engine and version first. If PostgreSQL, keep current module. If MySQL, swap to Azure Database for MySQL Flexible Server and retest migration tooling."
+    },
+    {
+      "category": "Networking",
+      "detail": "Subnet CIDRs, route intents, and security group rules are not provided, which can break connectivity or create over-permissive defaults.",
+      "mitigation": "Extract actual VPC CIDRs, subnet ranges, and SG rules from AWS and replace Terraform defaults before production deployment. Validate with connectivity tests per tier."
+    },
+    {
+      "category": "Application",
+      "detail": "Launch template details such as AMI, bootstrap scripts, instance profile usage, and scaling policies are missing.",
+      "mitigation": "Inspect launch templates and user data, create Azure images or cloud-init equivalents, and define autoscale rules based on observed CPU/request metrics."
+    },
+    {
+      "category": "Security",
+      "detail": "Secrets currently in AWS Secrets Manager may be embedded in app config or bootstrap logic and not yet mapped to Key Vault.",
+      "mitigation": "Inventory all secret consumers, migrate secrets to Key Vault, and update applications to use managed identity or secure secret injection."
+    },
+    {
+      "category": "Availability",
+      "detail": "Cutover may cause downtime if database synchronization and DNS transition are not staged.",
+      "mitigation": "Use parallel run, continuous replication where possible, low DNS TTL, and a rollback window with AWS left intact until Azure is stable."
+    },
+    {
+      "category": "Operations",
+      "detail": "Monitoring and alerting parity with AWS may be incomplete if application logs and metrics are not wired into Azure Monitor.",
+      "mitigation": "Enable diagnostics on all Azure resources, install Azure Monitor Agent on VMs if needed, and define baseline alerts before go-live."
+    }
+  ],
+  "open_questions": [
+    "What are the VPC CIDR and the six subnet CIDR ranges for public, app, and database tiers?",
+    "What OS, AMI, instance type, user data, and autoscaling settings are defined in AppLaunchTemplate and WebLaunchTemplate?",
+    "What listener ports, protocols, TLS certificates, path rules, and health probe paths are configured on the two ALBs and target groups?",
+    "Is the second ALB internal-only for app-tier traffic, and does the application require L7 routing between web and app tiers?",
+    "What exact inbound/outbound rules exist on the five AWS security groups?",
+    "What Aurora engine and version are in use: PostgreSQL or MySQL? What are storage size, HA, backup retention, and performance requirements?",
+    "What credentials and secret names/values from AWS Secrets Manager must be migrated to Key Vault?",
+    "Does the application depend on any AWS services not listed, such as S3, CloudWatch, Route53, SES, SSM, or ECR?",
+    "What DNS zones and certificates are used for the public application, and will Azure DNS and Azure-managed certificates be adopted?",
+    "Is there required hybrid connectivity to on-premises or other clouds, implying VPN or ExpressRoute?",
+    "Are there compliance requirements for encryption keys, private-only access, or regional data residency beyond the eastus preference?",
+    "Should the Azure resource group name remain exactly ThreeTierWebArch, or should environment suffixes be added for dev/test/prod separation?"
+  ],
+  "terraform": [
+    {
+      "filename": "providers.tf",
+      "content": "terraform {\n  required_version = \">= 1.5.0\"\n\n  required_providers {\n    azurerm = {\n      source  = \"hashicorp/azurerm\"\n      version = \"~> 3.100\"\n    }\n    random = {\n      source  = \"hashicorp/random\"\n      version = \"~> 3.6\"\n    }\n  }\n}\n\nprovider \"azurerm\" {\n  features {}\n}\n",
+      "description": "Terraform and provider requirements for AzureRM and random resources."
+    },
+    {
+      "filename": "variables.tf",
+      "content": "variable \"location\" {\n  description = \"Azure region for deployment.\"\n  type        = string\n  default     = \"eastus\"\n}\n\nvariable \"resource_group_name\" {\n  description = \"Azure Resource Group name preserving the AWS logical grouping.\"\n  type        = string\n  default     = \"ThreeTierWebArch\"\n}\n\nvariable \"environment\" {\n  description = \"Environment label used in naming.\"\n  type        = string\n  default     = \"prod\"\n}\n\nvariable \"tags\" {\n  description = \"Tags applied to all supported resources.\"\n  type        = map(string)\n  default = {\n    workload    = \"three-tier-web\"\n    environment = \"prod\"\n    managed_by  = \"terraform\"\n    source      = \"aws-migration\"\n  }\n}\n\nvariable \"vnet_address_space\" {\n  description = \"Address space for the Azure VNet. Replace with the AWS VPC CIDR during detailed design.\"\n  type        = list(string)\n  default     = [\"10.50.0.0/16\"]\n}\n\nvariable \"subnet_prefixes\" {\n  description = \"Subnet CIDRs for public, app, and database tiers across two zones.\"\n  type = object({\n    public_1 = string\n    public_2 = string\n    app_1    = string\n    app_2    = string\n    db_1     = string\n    db_2     = string\n  })\n  default = {\n    public_1 = \"10.50.1.0/24\"\n    public_2 = \"10.50.2.0/24\"\n    app_1    = \"10.50.11.0/24\"\n    app_2    = \"10.50.12.0/24\"\n    db_1     = \"10.50.21.0/24\"\n    db_2     = \"10.50.22.0/24\"\n  }\n}\n\nvariable \"web_vmss_instances\" {\n  description = \"Initial instance count for the web tier VM scale set.\"\n  type        = number\n  default     = 2\n}\n\nvariable \"app_vmss_instances\" {\n  description = \"Initial instance count for the app tier VM scale set.\"\n  type        = number\n  default     = 2\n}\n\nvariable \"web_vm_size\" {\n  description = \"VM size for the web tier.\"\n  type        = string\n  default     = \"Standard_B2s\"\n}\n\nvariable \"app_vm_size\" {\n  description = \"VM size for the app tier.\"\n  type        = string\n  default     = \"Standard_B2s\"\n}\n\nvariable \"admin_username\" {\n  description = \"Admin username for Linux VMs.\"\n  type        = string\n  default     = \"azureuser\"\n}\n\nvariable \"admin_ssh_public_key\" {\n  description = \"SSH public key for Linux VMs.\"\n  type        = string\n  default     = \"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7exampleplaceholdergeneratedkeyreplace\"\n}\n\nvariable \"web_custom_data\" {\n  description = \"Base64-encoded cloud-init or custom data for the web tier. Leave null if not used.\"\n  type        = string\n  default     = null\n}\n\nvariable \"app_custom_data\" {\n  description = \"Base64-encoded cloud-init or custom data for the app tier. Leave null if not used.\"\n  type        = string\n  default     = null\n}\n\nvariable \"web_backend_port\" {\n  description = \"Backend port for the web tier.\"\n  type        = number\n  default     = 80\n}\n\nvariable \"app_backend_port\" {\n  description = \"Backend port for the app tier.\"\n  type        = number\n  default     = 8080\n}\n\nvariable \"public_listener_port\" {\n  description = \"Public listener port on the internet-facing Application Gateway.\"\n  type        = number\n  default     = 80\n}\n\nvariable \"internal_listener_port\" {\n  description = \"Internal listener port on the internal Application Gateway.\"\n  type        = number\n  default     = 8080\n}\n\nvariable \"db_engine\" {\n  description = \"Managed database engine target. Current module implements postgresql.\"\n  type        = string\n  default     = \"postgresql\"\n}\n\nvariable \"db_sku_name\" {\n  description = \"SKU for Azure Database for PostgreSQL Flexible Server.\"\n  type        = string\n  default     = \"B_Standard_B1ms\"\n}\n\nvariable \"db_storage_mb\" {\n  description = \"Database storage in MB.\"\n  type        = number\n  default     = 32768\n}\n\nvariable \"db_version\" {\n  description = \"PostgreSQL major version.\"\n  type        = string\n  default     = \"14\"\n}\n\nvariable \"db_admin_username\" {\n  description = \"Database administrator username.\"\n  type        = string\n  default     = \"pgadmin\"\n}\n\nvariable \"db_admin_password\" {\n  description = \"Optional database administrator password. If null, a random password is generated and stored in Key Vault.\"\n  type        = string\n  default     = null\n  sensitive   = true\n}\n\nvariable \"db_name\" {\n  description = \"Application database name.\"\n  type        = string\n  default     = \"appdb\"\n}\n\nvariable \"key_vault_sku_name\" {\n  description = \"SKU for Key Vault.\"\n  type        = string\n  default     = \"standard\"\n}\n\nvariable \"enable_internal_application_gateway\" {\n  description = \"Whether to deploy an internal Application Gateway for the app tier to mirror the internal ALB pattern.\"\n  type        = bool\n  default     = true\n}\n\nvariable \"log_analytics_sku\" {\n  description = \"SKU for Log Analytics Workspace.\"\n  type        = string\n  default     = \"PerGB2018\"\n}\n\nvariable \"log_retention_in_days\" {\n  description = \"Retention for Log Analytics Workspace.\"\n  type        = number\n  default     = 30\n}\n",
+      "description": "Input variables with safe defaults for networking, compute, ingress, database, and observability."
+    },
+    {
+      "filename": "main.tf",
+      "content": "locals {\n  name_prefix = lower(replace(\"${var.resource_group_name}-${var.environment}\", \"_\", \"-\"))\n\n  common_tags = merge(var.tags, {\n    environment = var.environment\n  })\n}\n\n# Resource group preserving the AWS logical grouping.\nresource \"azurerm_resource_group\" \"this\" {\n  name     = var.resource_group_name\n  location = var.location\n  tags     = local.common_tags\n}\n\n# Current Azure client configuration for RBAC and Key Vault access policies.\ndata \"azurerm_client_config\" \"current\" {}\n\n# Random suffix to keep globally unique resource names valid.\nresource \"random_string\" \"suffix\" {\n  length  = 6\n  upper   = false\n  special = false\n}\n\n# Random password for the database if one is not supplied.\nresource \"random_password\" \"db_admin\" {\n  length           = 20\n  special          = true\n  override_special = \"!@#%^*-_\"\n}\n\n# Virtual network matching the AWS VPC role.\nresource \"azurerm_virtual_network\" \"this\" {\n  name                = \"${local.name_prefix}-vnet\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  address_space       = var.vnet_address_space\n  tags                = local.common_tags\n}\n\n# Public subnet 1.\nresource \"azurerm_subnet\" \"public_1\" {\n  name                 = \"public-subnet-1\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.public_1]\n}\n\n# Public subnet 2.\nresource \"azurerm_subnet\" \"public_2\" {\n  name                 = \"public-subnet-2\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.public_2]\n}\n\n# Private app subnet 1.\nresource \"azurerm_subnet\" \"app_1\" {\n  name                 = \"private-app-subnet-1\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.app_1]\n}\n\n# Private app subnet 2.\nresource \"azurerm_subnet\" \"app_2\" {\n  name                 = \"private-app-subnet-2\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.app_2]\n}\n\n# Database subnet 1 delegated for PostgreSQL Flexible Server.\nresource \"azurerm_subnet\" \"db_1\" {\n  name                 = \"database-subnet-1\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.db_1]\n\n  delegation {\n    name = \"postgres-flex-delegation\"\n\n    service_delegation {\n      name    = \"Microsoft.DBforPostgreSQL/flexibleServers\"\n      actions = [\"Microsoft.Network/virtualNetworks/subnets/join/action\"]\n    }\n  }\n}\n\n# Database subnet 2 reserved to mirror AWS topology and future expansion.\nresource \"azurerm_subnet\" \"db_2\" {\n  name                 = \"database-subnet-2\"\n  resource_group_name  = azurerm_resource_group.this.name\n  virtual_network_name = azurerm_virtual_network.this.name\n  address_prefixes     = [var.subnet_prefixes.db_2]\n}\n\n# Network security group for the public ingress tier.\nresource \"azurerm_network_security_group\" \"public\" {\n  name                = \"${local.name_prefix}-public-nsg\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Allow HTTP to the public Application Gateway.\nresource \"azurerm_network_security_rule\" \"public_http_in\" {\n  name                        = \"allow-http-in\"\n  priority                    = 100\n  direction                   = \"Inbound\"\n  access                      = \"Allow\"\n  protocol                    = \"Tcp\"\n  source_port_range           = \"*\"\n  destination_port_range      = tostring(var.public_listener_port)\n  source_address_prefix       = \"*\"\n  destination_address_prefix  = \"*\"\n  resource_group_name         = azurerm_resource_group.this.name\n  network_security_group_name = azurerm_network_security_group.public.name\n}\n\n# Network security group for the app tier.\nresource \"azurerm_network_security_group\" \"app\" {\n  name                = \"${local.name_prefix}-app-nsg\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Allow web tier traffic to the app tier.\nresource \"azurerm_network_security_rule\" \"app_from_web\" {\n  name                        = \"allow-web-to-app\"\n  priority                    = 100\n  direction                   = \"Inbound\"\n  access                      = \"Allow\"\n  protocol                    = \"Tcp\"\n  source_port_range           = \"*\"\n  destination_port_range      = tostring(var.app_backend_port)\n  source_address_prefix       = var.subnet_prefixes.public_1\n  destination_address_prefix  = \"*\"\n  resource_group_name         = azurerm_resource_group.this.name\n  network_security_group_name = azurerm_network_security_group.app.name\n}\n\n# Allow web tier traffic from second public subnet to the app tier.\nresource \"azurerm_network_security_rule\" \"app_from_web_2\" {\n  name                        = \"allow-web2-to-app\"\n  priority                    = 110\n  direction                   = \"Inbound\"\n  access                      = \"Allow\"\n  protocol                    = \"Tcp\"\n  source_port_range           = \"*\"\n  destination_port_range      = tostring(var.app_backend_port)\n  source_address_prefix       = var.subnet_prefixes.public_2\n  destination_address_prefix  = \"*\"\n  resource_group_name         = azurerm_resource_group.this.name\n  network_security_group_name = azurerm_network_security_group.app.name\n}\n\n# Network security group for the database tier.\nresource \"azurerm_network_security_group\" \"db\" {\n  name                = \"${local.name_prefix}-db-nsg\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Allow app tier traffic to PostgreSQL.\nresource \"azurerm_network_security_rule\" \"db_from_app_1\" {\n  name                        = \"allow-app1-to-db\"\n  priority                    = 100\n  direction                   = \"Inbound\"\n  access                      = \"Allow\"\n  protocol                    = \"Tcp\"\n  source_port_range           = \"*\"\n  destination_port_range      = \"5432\"\n  source_address_prefix       = var.subnet_prefixes.app_1\n  destination_address_prefix  = \"*\"\n  resource_group_name         = azurerm_resource_group.this.name\n  network_security_group_name = azurerm_network_security_group.db.name\n}\n\n# Allow app tier traffic from second app subnet to PostgreSQL.\nresource \"azurerm_network_security_rule\" \"db_from_app_2\" {\n  name                        = \"allow-app2-to-db\"\n  priority                    = 110\n  direction                   = \"Inbound\"\n  access                      = \"Allow\"\n  protocol                    = \"Tcp\"\n  source_port_range           = \"*\"\n  destination_port_range      = \"5432\"\n  source_address_prefix       = var.subnet_prefixes.app_2\n  destination_address_prefix  = \"*\"\n  resource_group_name         = azurerm_resource_group.this.name\n  network_security_group_name = azurerm_network_security_group.db.name\n}\n\n# Associate the public NSG to public subnet 1.\nresource \"azurerm_subnet_network_security_group_association\" \"public_1\" {\n  subnet_id                 = azurerm_subnet.public_1.id\n  network_security_group_id = azurerm_network_security_group.public.id\n}\n\n# Associate the public NSG to public subnet 2.\nresource \"azurerm_subnet_network_security_group_association\" \"public_2\" {\n  subnet_id                 = azurerm_subnet.public_2.id\n  network_security_group_id = azurerm_network_security_group.public.id\n}\n\n# Associate the app NSG to app subnet 1.\nresource \"azurerm_subnet_network_security_group_association\" \"app_1\" {\n  subnet_id                 = azurerm_subnet.app_1.id\n  network_security_group_id = azurerm_network_security_group.app.id\n}\n\n# Associate the app NSG to app subnet 2.\nresource \"azurerm_subnet_network_security_group_association\" \"app_2\" {\n  subnet_id                 = azurerm_subnet.app_2.id\n  network_security_group_id = azurerm_network_security_group.app.id\n}\n\n# Associate the database NSG to database subnet 1.\nresource \"azurerm_subnet_network_security_group_association\" \"db_1\" {\n  subnet_id                 = azurerm_subnet.db_1.id\n  network_security_group_id = azurerm_network_security_group.db.id\n}\n\n# Associate the database NSG to database subnet 2.\nresource \"azurerm_subnet_network_security_group_association\" \"db_2\" {\n  subnet_id                 = azurerm_subnet.db_2.id\n  network_security_group_id = azurerm_network_security_group.db.id\n}\n\n# Public IP for NAT Gateway outbound internet access.\nresource \"azurerm_public_ip\" \"nat\" {\n  name                = \"${local.name_prefix}-nat-pip\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  allocation_method   = \"Static\"\n  sku                 = \"Standard\"\n  tags                = local.common_tags\n}\n\n# NAT Gateway replacing the AWS NAT Gateway for private subnet egress.\nresource \"azurerm_nat_gateway\" \"this\" {\n  name                = \"${local.name_prefix}-natgw\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  sku_name            = \"Standard\"\n  tags                = local.common_tags\n}\n\n# Associate the NAT public IP.\nresource \"azurerm_nat_gateway_public_ip_association\" \"this\" {\n  nat_gateway_id       = azurerm_nat_gateway.this.id\n  public_ip_address_id = azurerm_public_ip.nat.id\n}\n\n# Attach NAT Gateway to app subnet 1.\nresource \"azurerm_subnet_nat_gateway_association\" \"app_1\" {\n  subnet_id      = azurerm_subnet.app_1.id\n  nat_gateway_id = azurerm_nat_gateway.this.id\n}\n\n# Attach NAT Gateway to app subnet 2.\nresource \"azurerm_subnet_nat_gateway_association\" \"app_2\" {\n  subnet_id      = azurerm_subnet.app_2.id\n  nat_gateway_id = azurerm_nat_gateway.this.id\n}\n\n# Route table for public subnets.\nresource \"azurerm_route_table\" \"public\" {\n  name                = \"${local.name_prefix}-public-rt\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Route table for app subnets.\nresource \"azurerm_route_table\" \"app\" {\n  name                = \"${local.name_prefix}-app-rt\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Route table for database subnets.\nresource \"azurerm_route_table\" \"db\" {\n  name                = \"${local.name_prefix}-db-rt\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Associate public route table to public subnet 1.\nresource \"azurerm_subnet_route_table_association\" \"public_1\" {\n  subnet_id      = azurerm_subnet.public_1.id\n  route_table_id = azurerm_route_table.public.id\n}\n\n# Associate public route table to public subnet 2.\nresource \"azurerm_subnet_route_table_association\" \"public_2\" {\n  subnet_id      = azurerm_subnet.public_2.id\n  route_table_id = azurerm_route_table.public.id\n}\n\n# Associate app route table to app subnet 1.\nresource \"azurerm_subnet_route_table_association\" \"app_1\" {\n  subnet_id      = azurerm_subnet.app_1.id\n  route_table_id = azurerm_route_table.app.id\n}\n\n# Associate app route table to app subnet 2.\nresource \"azurerm_subnet_route_table_association\" \"app_2\" {\n  subnet_id      = azurerm_subnet.app_2.id\n  route_table_id = azurerm_route_table.app.id\n}\n\n# Associate database route table to database subnet 1.\nresource \"azurerm_subnet_route_table_association\" \"db_1\" {\n  subnet_id      = azurerm_subnet.db_1.id\n  route_table_id = azurerm_route_table.db.id\n}\n\n# Associate database route table to database subnet 2.\nresource \"azurerm_subnet_route_table_association\" \"db_2\" {\n  subnet_id      = azurerm_subnet.db_2.id\n  route_table_id = azurerm_route_table.db.id\n}\n\n# Public IP for the internet-facing Application Gateway.\nresource \"azurerm_public_ip\" \"public_agw\" {\n  name                = \"${local.name_prefix}-public-agw-pip\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  allocation_method   = \"Static\"\n  sku                 = \"Standard\"\n  tags                = local.common_tags\n}\n\n# Public Application Gateway replacing the internet-facing ALB.\nresource \"azurerm_application_gateway\" \"public\" {\n  name                = \"${local.name_prefix}-public-agw\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n\n  sku {\n    name     = \"Standard_v2\"\n    tier     = \"Standard_v2\"\n    capacity = 2\n  }\n\n  gateway_ip_configuration {\n    name      = \"public-gateway-ip-config\"\n    subnet_id = azurerm_subnet.public_1.id\n  }\n\n  frontend_port {\n    name = \"frontend-port-http\"\n    port = var.public_listener_port\n  }\n\n  frontend_ip_configuration {\n    name                 = \"frontend-public\"\n    public_ip_address_id = azurerm_public_ip.public_agw.id\n  }\n\n  backend_address_pool {\n    name = \"web-backend-pool\"\n  }\n\n  backend_http_settings {\n    name                  = \"web-http-settings\"\n    cookie_based_affinity = \"Disabled\"\n    path                  = \"/\"\n    port                  = var.web_backend_port\n    protocol              = \"Http\"\n    request_timeout       = 30\n  }\n\n  http_listener {\n    name                           = \"public-http-listener\"\n    frontend_ip_configuration_name = \"frontend-public\"\n    frontend_port_name             = \"frontend-port-http\"\n    protocol                       = \"Http\"\n  }\n\n  request_routing_rule {\n    name                       = \"public-routing-rule\"\n    rule_type                  = \"Basic\"\n    http_listener_name         = \"public-http-listener\"\n    backend_address_pool_name  = \"web-backend-pool\"\n    backend_http_settings_name = \"web-http-settings\"\n    priority                   = 100\n  }\n}\n\n# Private IP for the internal Application Gateway.\nresource \"azurerm_private_dns_zone\" \"postgres\" {\n  name                = \"${local.name_prefix}.postgres.database.azure.com\"\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Link the PostgreSQL private DNS zone to the VNet.\nresource \"azurerm_private_dns_zone_virtual_network_link\" \"postgres\" {\n  name                  = \"${local.name_prefix}-postgres-link\"\n  private_dns_zone_name = azurerm_private_dns_zone.postgres.name\n  resource_group_name   = azurerm_resource_group.this.name\n  virtual_network_id    = azurerm_virtual_network.this.id\n  tags                  = local.common_tags\n}\n\n# Internal Application Gateway replacing the internal ALB pattern.\nresource \"azurerm_application_gateway\" \"internal\" {\n  count               = var.enable_internal_application_gateway ? 1 : 0\n  name                = \"${local.name_prefix}-internal-agw\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n\n  sku {\n    name     = \"Standard_v2\"\n    tier     = \"Standard_v2\"\n    capacity = 2\n  }\n\n  gateway_ip_configuration {\n    name      = \"internal-gateway-ip-config\"\n    subnet_id = azurerm_subnet.public_2.id\n  }\n\n  frontend_port {\n    name = \"frontend-port-internal\"\n    port = var.internal_listener_port\n  }\n\n  frontend_ip_configuration {\n    name                          = \"frontend-internal\"\n    private_ip_address_allocation = \"Dynamic\"\n    subnet_id                     = azurerm_subnet.public_2.id\n  }\n\n  backend_address_pool {\n    name = \"app-backend-pool\"\n  }\n\n  backend_http_settings {\n    name                  = \"app-http-settings\"\n    cookie_based_affinity = \"Disabled\"\n    path                  = \"/\"\n    port                  = var.app_backend_port\n    protocol              = \"Http\"\n    request_timeout       = 30\n  }\n\n  http_listener {\n    name                           = \"internal-http-listener\"\n    frontend_ip_configuration_name = \"frontend-internal\"\n    frontend_port_name             = \"frontend-port-internal\"\n    protocol                       = \"Http\"\n  }\n\n  request_routing_rule {\n    name                       = \"internal-routing-rule\"\n    rule_type                  = \"Basic\"\n    http_listener_name         = \"internal-http-listener\"\n    backend_address_pool_name  = \"app-backend-pool\"\n    backend_http_settings_name = \"app-http-settings\"\n    priority                   = 100\n  }\n}\n\n# Log Analytics Workspace for Azure Monitor.\nresource \"azurerm_log_analytics_workspace\" \"this\" {\n  name                = \"${local.name_prefix}-law\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  sku                 = var.log_analytics_sku\n  retention_in_days   = var.log_retention_in_days\n  tags                = local.common_tags\n}\n\n# User-assigned managed identity for the web tier.\nresource \"azurerm_user_assigned_identity\" \"web\" {\n  name                = \"${local.name_prefix}-web-mi\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# User-assigned managed identity for the app tier.\nresource \"azurerm_user_assigned_identity\" \"app\" {\n  name                = \"${local.name_prefix}-app-mi\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  tags                = local.common_tags\n}\n\n# Key Vault for migrated secrets.\nresource \"azurerm_key_vault\" \"this\" {\n  name                        = substr(replace(\"${local.name_prefix}${random_string.suffix.result}kv\", \"-\", \"\"), 0, 24)\n  location                    = azurerm_resource_group.this.location\n  resource_group_name         = azurerm_resource_group.this.name\n  tenant_id                   = data.azurerm_client_config.current.tenant_id\n  sku_name                    = var.key_vault_sku_name\n  purge_protection_enabled    = false\n  soft_delete_retention_days  = 7\n  enabled_for_disk_encryption = true\n  tags                        = local.common_tags\n\n  access_policy {\n    tenant_id = data.azurerm_client_config.current.tenant_id\n    object_id = data.azurerm_client_config.current.object_id\n\n    secret_permissions = [\n      \"Get\",\n      \"List\",\n      \"Set\",\n      \"Delete\",\n      \"Purge\",\n      \"Recover\"\n    ]\n  }\n}\n\n# Store the database admin password in Key Vault.\nresource \"azurerm_key_vault_secret\" \"db_admin_password\" {\n  name         = \"db-admin-password\"\n  value        = coalesce(var.db_admin_password, random_password.db_admin.result)\n  key_vault_id = azurerm_key_vault.this.id\n  tags         = local.common_tags\n}\n\n# PostgreSQL Flexible Server as the managed Aurora-compatible target.\nresource \"azurerm_postgresql_flexible_server\" \"this\" {\n  name                   = substr(replace(\"${local.name_prefix}-${random_string.suffix.result}-pg\", \"_\", \"-\"), 0, 63)\n  resource_group_name    = azurerm_resource_group.this.name\n  location               = azurerm_resource_group.this.location\n  version                = var.db_version\n  delegated_subnet_id    = azurerm_subnet.db_1.id\n  private_dns_zone_id    = azurerm_private_dns_zone.postgres.id\n  administrator_login    = var.db_admin_username\n  administrator_password = coalesce(var.db_admin_password, random_password.db_admin.result)\n  storage_mb             = var.db_storage_mb\n  sku_name               = var.db_sku_name\n  backup_retention_days  = 7\n  zone                   = \"1\"\n  tags                   = local.common_tags\n\n  depends_on = [azurerm_private_dns_zone_virtual_network_link.postgres]\n}\n\n# Application database on the PostgreSQL server.\nresource \"azurerm_postgresql_flexible_server_database\" \"app\" {\n  name      = var.db_name\n  server_id = azurerm_postgresql_flexible_server.this.id\n  collation = \"en_US.utf8\"\n  charset   = \"UTF8\"\n}\n\n# Web tier VM Scale Set replacing the web launch template and target group.\nresource \"azurerm_linux_virtual_machine_scale_set\" \"web\" {\n  name                = \"${local.name_prefix}-web-vmss\"\n  resource_group_name = azurerm_resource_group.this.name\n  location            = azurerm_resource_group.this.location\n  sku                 = var.web_vm_size\n  instances           = var.web_vmss_instances\n  admin_username      = var.admin_username\n  custom_data         = var.web_custom_data\n  tags                = local.common_tags\n\n  admin_ssh_key {\n    username   = var.admin_username\n    public_key = var.admin_ssh_public_key\n  }\n\n  source_image_reference {\n    publisher = \"Canonical\"\n    offer     = \"0001-com-ubuntu-server-jammy\"\n    sku       = \"22_04-lts-gen2\"\n    version   = \"latest\"\n  }\n\n  os_disk {\n    caching              = \"ReadWrite\"\n    storage_account_type = \"Standard_LRS\"\n  }\n\n  network_interface {\n    name    = \"webnic\"\n    primary = true\n\n    ip_configuration {\n      name      = \"internal\"\n      primary   = true\n      subnet_id = azurerm_subnet.app_1.id\n      application_gateway_backend_address_pool_ids = [\n        azurerm_application_gateway.public.backend_address_pool[0].id\n      ]\n    }\n  }\n\n  identity {\n    type         = \"UserAssigned\"\n    identity_ids = [azurerm_user_assigned_identity.web.id]\n  }\n}\n\n# App tier VM Scale Set replacing the app launch template and target group.\nresource \"azurerm_linux_virtual_machine_scale_set\" \"app\" {\n  name                = \"${local.name_prefix}-app-vmss\"\n  resource_group_name = azurerm_resource_group.this.name\n  location            = azurerm_resource_group.this.location\n  sku                 = var.app_vm_size\n  instances           = var.app_vmss_instances\n  admin_username      = var.admin_username\n  custom_data         = var.app_custom_data\n  tags                = local.common_tags\n\n  admin_ssh_key {\n    username   = var.admin_username\n    public_key = var.admin_ssh_public_key\n  }\n\n  source_image_reference {\n    publisher = \"Canonical\"\n    offer     = \"0001-com-ubuntu-server-jammy\"\n    sku       = \"22_04-lts-gen2\"\n    version   = \"latest\"\n  }\n\n  os_disk {\n    caching              = \"ReadWrite\"\n    storage_account_type = \"Standard_LRS\"\n  }\n\n  network_interface {\n    name    = \"appnic\"\n    primary = true\n\n    ip_configuration {\n      name      = \"internal\"\n      primary   = true\n      subnet_id = azurerm_subnet.app_2.id\n      application_gateway_backend_address_pool_ids = var.enable_internal_application_gateway ? [\n        azurerm_application_gateway.internal[0].backend_address_pool[0].id\n      ] : []\n    }\n  }\n\n  identity {\n    type         = \"UserAssigned\"\n    identity_ids = [azurerm_user_assigned_identity.app.id]\n  }\n}\n\n# Diagnostic settings for the public Application Gateway.\nresource \"azurerm_monitor_diagnostic_setting\" \"public_agw\" {\n  name                       = \"public-agw-diagnostics\"\n  target_resource_id         = azurerm_application_gateway.public.id\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id\n\n  enabled_log {\n    category = \"ApplicationGatewayAccessLog\"\n  }\n\n  enabled_log {\n    category = \"ApplicationGatewayPerformanceLog\"\n  }\n\n  enabled_log {\n    category = \"ApplicationGatewayFirewallLog\"\n  }\n\n  metric {\n    category = \"AllMetrics\"\n    enabled  = true\n  }\n}\n\n# Diagnostic settings for the PostgreSQL Flexible Server.\nresource \"azurerm_monitor_diagnostic_setting\" \"postgres\" {\n  name                       = \"postgres-diagnostics\"\n  target_resource_id         = azurerm_postgresql_flexible_server.this.id\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id\n\n  metric {\n    category = \"AllMetrics\"\n    enabled  = true\n  }\n}\n",
+      "description": "Core Azure resources implementing the three-tier migration target with networking, ingress, compute, database, secrets, identity, and monitoring."
+    },
+    {
+      "filename": "outputs.tf",
+      "content": "output \"resource_group_name\" {\n  description = \"Name of the Azure Resource Group.\"\n  value       = azurerm_resource_group.this.name\n}\n\noutput \"vnet_id\" {\n  description = \"ID of the Azure Virtual Network.\"\n  value       = azurerm_virtual_network.this.id\n}\n\noutput \"public_application_gateway_public_ip\" {\n  description = \"Public IP address of the internet-facing Application Gateway.\"\n  value       = azurerm_public_ip.public_agw.ip_address\n}\n\noutput \"internal_application_gateway_private_ip\" {\n  description = \"Private IP address of the internal Application Gateway if enabled.\"\n  value       = var.enable_internal_application_gateway ? azurerm_application_gateway.internal[0].frontend_ip_configuration[0].private_ip_address : null\n}\n\noutput \"postgresql_fqdn\" {\n  description = \"Private FQDN of the PostgreSQL Flexible Server.\"\n  value       = azurerm_postgresql_flexible_server.this.fqdn\n}\n\noutput \"postgresql_database_name\" {\n  description = \"Application database name.\"\n  value       = azurerm_postgresql_flexible_server_database.app.name\n}\n\noutput \"key_vault_name\" {\n  description = \"Key Vault name storing migrated secrets.\"\n  value       = azurerm_key_vault.this.name\n}\n\noutput \"log_analytics_workspace_id\" {\n  description = \"Log Analytics Workspace ID for Azure Monitor integration.\"\n  value       = azurerm_log_analytics_workspace.this.id\n}\n\noutput \"web_vmss_name\" {\n  description = \"Web tier VM Scale Set name.\"\n  value       = azurerm_linux_virtual_machine_scale_set.web.name\n}\n\noutput \"app_vmss_name\" {\n  description = \"App tier VM Scale Set name.\"\n  value       = azurerm_linux_virtual_machine_scale_set.app.name\n}\n",
+      "description": "Useful outputs for resource IDs, ingress endpoints, database endpoint, and operational integration."
+    },
+    {
+      "filename": "README.md",
+      "content": "This Terraform module deploys an Azure target for the AWS ThreeTierWebArch workload.\nIt creates one Resource Group, a six-subnet VNet, NSGs, route tables, NAT Gateway, public/internal Application Gateways, web/app Linux VM Scale Sets, PostgreSQL Flexible Server, Key Vault, and Log Analytics.\n\nPrerequisites: Azure CLI, Terraform >= 1.5, and an authenticated session with `az login`.\nSet the target subscription if needed with `az account set --subscription <subscription-id>`.\n\nRun:\nterraform init\nterraform plan -out tfplan\nterraform apply tfplan\n\nBefore production use, replace default CIDRs, SSH key, listener ports, health settings, VM bootstrap data, and database engine/settings with discovered AWS values.\nPost-deploy, load application code/config onto the VM Scale Sets, migrate the database, validate connectivity tier by tier, then perform DNS cutover.\n",
+      "description": "Short usage guide for deploying and adapting the Azure migration module."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+Migration planner: building request
+
+---
+
+Invoking Azure OpenAI (structured migration plan)
+
+---
+
+Error: Error code: 404 - {'error': {'code': '404', 'message': 'Resource not found'}}

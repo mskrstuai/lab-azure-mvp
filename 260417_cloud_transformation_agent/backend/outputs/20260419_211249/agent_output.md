@@ -1,0 +1,102 @@
+## Summary
+Migrate the discovered ThreeTierWebArch workload into a single Azure Resource Group in eastus, preserving the three-tier pattern with managed Azure services. Based on the provided scope, map the Aurora MySQL Serverless database to Azure Database for MySQL Flexible Server, the internet-facing ALB to Azure Application Gateway or Azure Front Door + Application Gateway, the internal ALB to an internal Application Gateway or Azure Load Balancer depending on Layer 7 requirements, and the AWS VPC to an Azure hub-spoke or single spoke VNet design. To minimize downtime, use a staged cutover with parallel Azure deployment, database replication or dump/restore, validation behind private endpoints/internal routing first, then DNS/application cutover.
+
+## Assessment
+Moderate complexity based on the currently visible resources, but the migration cannot be executed end-to-end without identifying the application compute tier and DNS/identity dependencies behind the two ALBs. Key prerequisites are: discovery of ALB target groups and backend instances/services, confirmation of database size and compatibility for Aurora MySQL 8.0 features, target network connectivity design between AWS ap-northeast-2 and Azure eastus, and cutover ownership for public/internal endpoints. Cross-region migration to eastus increases latency and makes network and data transfer planning important.
+
+## Migration steps
+### 1. Discover
+Inventory the missing application components and dependencies associated with the ThreeTierWebArch logical stack. Specifically identify ALB listeners, rules, target groups, backend compute, security groups, subnets, route tables, NAT/egress paths, DNS records, certificates, and any secrets used by the application to connect to Aurora.
+- **AWS:** Application Load Balancer (public/internal), VPC, Aurora MySQL Serverless, Associated target groups/listeners, Security groups, Route 53 if used, Secrets Manager/Parameter Store if used, EC2/ECS/EKS/Lambda if used by ALB backends
+- **Azure:** Azure Resource Group, Azure Migrate, Azure Architecture Center landing zone patterns, Azure DNS, Azure Key Vault
+- *Notes:* This is the gating step because the provided scope does not include the compute tier. Validation: produce a dependency map showing each ALB listener -> target group -> backend service, plus each backend -> database connection and secret source.
+
+### 2. Design
+Create the Azure landing zone for the application in eastus. Preserve logical grouping with one Azure Resource Group for application resources, and design networking with at minimum one VNet segmented into web, app, and data subnets. If enterprise connectivity is required, use hub-spoke with shared services in a hub and the application in a spoke. Plan private access to the database and internal application tier.
+- **AWS:** VPC 10.0.0.0/16, Internal ALB, Internet-facing ALB
+- **Azure:** Azure Virtual Network, Subnets for web/app/data, Network Security Groups, Azure Bastion if admin access needed, Hub-spoke topology if shared connectivity exists, ExpressRoute or Site-to-Site VPN for hybrid/cross-cloud connectivity
+- *Notes:* Map the AWS VPC CIDR carefully to avoid overlap with existing Azure networks. Validation: approved IP plan, subnet plan, routing, NSG rules, and connectivity method between AWS and Azure for migration/cutover.
+
+### 3. Design
+Map the public and internal ingress patterns. Use Azure Application Gateway with Web Application Firewall for the public ALB if Layer 7 routing, host/path rules, or TLS termination are required. For the internal ALB, use an internal Application Gateway if internal HTTP routing is needed; otherwise use Azure Load Balancer for Layer 4 only. Consider Azure Front Door only if global edge acceleration or multi-region entry is desired.
+- **AWS:** Internet-facing ALB, Internal ALB
+- **Azure:** Azure Application Gateway (public), Azure Application Gateway (internal), Azure Load Balancer (internal, if L4 only), Azure Front Door (optional), Azure DNS
+- *Notes:* Selection depends on current ALB listener/rule behavior. Validation: every AWS listener and rule has an Azure equivalent, including health probes, session affinity, TLS certificates, and backend pool membership.
+
+### 4. Design
+Plan the database migration from Aurora MySQL Serverless v8 to Azure Database for MySQL Flexible Server. Validate engine compatibility, parameter requirements, authentication model, connection limits, and whether serverless behavior must be approximated with Azure compute scaling options.
+- **AWS:** Aurora MySQL Serverless 8.0
+- **Azure:** Azure Database for MySQL Flexible Server, Private DNS Zone, Private Endpoint or VNet integration as applicable, Azure Backup capabilities for MySQL if required
+- *Notes:* Aurora-specific features are not always portable. Validation: schema assessment completed, unsupported features identified, test restore or replication proven, and application connection strings updated to Azure endpoints.
+
+### 5. Build
+Provision the Azure Resource Group and deploy the target platform: VNet/subnets, NSGs, ingress components, Azure Database for MySQL Flexible Server, monitoring, secrets, and backup configuration. Apply tags and naming aligned to the original logical grouping.
+- **AWS:** ThreeTierWebArch logical grouping, VPC, ALBs, Aurora
+- **Azure:** Azure Resource Group, Azure Virtual Network, Application Gateway, Azure Database for MySQL Flexible Server, Azure Key Vault, Azure Monitor, Log Analytics Workspace, Recovery/backup configuration
+- *Notes:* Keep infrastructure as code if possible. Validation: all Azure resources deploy successfully, private/public routing behaves as designed, and monitoring/alerts are active.
+
+### 6. Migrate
+Establish data migration with minimal downtime. Prefer continuous replication if supported by the Aurora MySQL version and migration tooling; otherwise perform initial load followed by a short cutover window. Keep the source database active until Azure validation is complete.
+- **AWS:** Aurora MySQL Serverless
+- **Azure:** Azure Database Migration Service or MySQL native migration approach, Azure Database for MySQL Flexible Server
+- *Notes:* Because downtime must be minimized, test online migration first. Validation: row counts, checksums/sample query validation, user/privilege migration, and application read/write tests against Azure database.
+
+### 7. Migrate
+Migrate the application tier behind the ALBs once the missing compute services are identified. Replatform to Azure VMs/VM Scale Sets, AKS, App Service, Container Apps, or Functions based on the actual AWS backend type and application architecture. Recreate backend pools and health probes in Azure ingress.
+- **AWS:** Unknown backend compute behind ALBs
+- **Azure:** Azure Virtual Machines/VM Scale Sets, AKS, Azure App Service, Azure Container Apps, Azure Functions
+- *Notes:* This step is blocked until backend discovery is complete. Validation: application instances register healthy behind Azure ingress, internal tier can reach database privately, and end-to-end functional tests pass.
+
+### 8. Secure
+Implement identity, access, and secret management. Map AWS IAM usage for operators and workloads to Microsoft Entra ID and Azure RBAC. Store database credentials, TLS certificates, and application secrets in Azure Key Vault, and integrate workloads with managed identities where possible.
+- **AWS:** IAM if used, Secrets Manager/Parameter Store if used, ALB TLS certificates if used
+- **Azure:** Microsoft Entra ID, Azure RBAC, Managed Identities, Azure Key Vault, Application Gateway certificate integration
+- *Notes:* Do not hardcode secrets during migration. Validation: least-privilege access reviewed, secrets retrieved from Key Vault successfully, and admin access is Entra-backed.
+
+### 9. Validate
+Run pre-cutover and cutover validation. Test public and internal application paths, database connectivity, failover behavior, monitoring, logging, backup restore, and security controls. Validate performance from expected user locations, especially because the target region is eastus while the source is ap-northeast-2.
+- **AWS:** Public/internal ALBs, Aurora, VPC
+- **Azure:** Application Gateway, Azure Database for MySQL Flexible Server, Azure Monitor, Log Analytics, Azure Backup/restore tests
+- *Notes:* Validation should include synthetic probes and user acceptance testing. Success criteria: all critical paths pass, latency is acceptable, alerts fire correctly, and restore procedures are documented and tested.
+
+### 10. Cutover
+Execute phased cutover. First switch internal consumers if applicable, then update public DNS to Azure ingress with reduced TTLs. Monitor closely and keep rollback available by preserving AWS services until stability is confirmed.
+- **AWS:** ALB DNS endpoints, Aurora endpoint, Route 53 if used
+- **Azure:** Azure DNS or existing DNS provider, Azure Application Gateway/Front Door, Azure Database for MySQL Flexible Server
+- *Notes:* Use a rollback window and freeze nonessential changes. Validation: DNS resolves to Azure, traffic is served successfully, error rates remain within threshold, and no data divergence is observed.
+
+### 11. Operate
+Finalize operational readiness with dashboards, alerts, patching, backup retention, disaster recovery, and cost governance. Decommission AWS resources only after agreed stabilization and data retention requirements are met.
+- **AWS:** All in-scope AWS resources
+- **Azure:** Azure Monitor, Log Analytics, Azure Backup, Azure Policy, Cost Management, Optional paired-region DR design
+- *Notes:* For DR, assess whether eastus-only is sufficient or whether replication to a secondary Azure region is required. Validation: runbook completion, alert ownership assigned, backup retention verified, and AWS shutdown checklist approved.
+
+## Risks
+- **Application Dependency:** The compute tier behind the two ALBs is not included in the provided scope, so the actual application hosting model and migration target cannot yet be selected.
+  - *Mitigation:* Discover ALB target groups, listeners, and backend resources before finalizing architecture. Block cutover until backend inventory and dependency mapping are complete.
+- **Data:** Aurora MySQL Serverless may use features or behaviors not identical to Azure Database for MySQL Flexible Server.
+  - *Mitigation:* Run schema and feature compatibility assessment, test migration in non-production, and identify any Aurora-specific functions, parameter settings, or failover assumptions.
+- **Networking:** Migrating from ap-northeast-2 to eastus introduces significant latency and may affect application response times and database access patterns.
+  - *Mitigation:* Validate user and application latency requirements, consider whether eastus is acceptable, and use staged performance testing before cutover.
+- **Networking:** VNet address overlap or incomplete routing/security translation from AWS VPC can block connectivity.
+  - *Mitigation:* Complete IP planning early, map subnets/routes/NSGs explicitly, and test private connectivity between tiers before application deployment.
+- **Security:** Secrets, certificates, and IAM-based access may be lost or weakened during migration if not mapped properly.
+  - *Mitigation:* Inventory secrets and certificates, move them to Key Vault, use Entra ID and Azure RBAC, and validate least-privilege access before go-live.
+- **Operations:** Insufficient monitoring and backup validation can cause delayed incident detection or failed recovery after cutover.
+  - *Mitigation:* Enable Azure Monitor, centralize logs in Log Analytics, configure alerts, and perform backup/restore testing before production cutover.
+- **Cutover:** DNS or database cutover can cause downtime or split-brain writes if sequencing is incorrect.
+  - *Mitigation:* Reduce DNS TTLs, use online replication where possible, enforce a controlled write cutover window, and maintain a tested rollback plan.
+
+## Open questions
+- What are the backend targets for the public and internal ALBs (EC2, ECS, EKS, IP targets, Lambda, or other)?
+- What listener ports, host/path routing rules, TLS certificates, and health check settings are configured on each ALB?
+- Is Route 53 used for public or private DNS records that point to these ALBs, and what are the current TTLs?
+- Are there additional in-scope resources in the ThreeTierWebArch group not listed here, especially compute, security groups, subnets, NAT gateways, route tables, IAM roles, Secrets Manager, or Parameter Store entries?
+- What is the expected RTO/RPO and maximum acceptable downtime for the database and application cutover?
+- Can the target Azure region remain eastus despite the source being in ap-northeast-2, or should a closer Azure region be considered for latency/compliance reasons?
+- What is the actual Aurora database size, schema count, peak TPS, and are there Aurora-specific features in use?
+- Is private connectivity between AWS and Azure required during migration, and if so should it use Site-to-Site VPN or ExpressRoute via a connectivity provider?
+- Are there compliance, encryption, or key management requirements that mandate customer-managed keys in Azure?
+- Is the internal ALB consumed only by application tiers within the VPC, or by on-premises/other networks as well?
+- What authentication/authorization model does the application use today, and does any AWS IAM integration need to be replaced in Azure?
+- What backup retention and disaster recovery requirements must be met in Azure after migration?

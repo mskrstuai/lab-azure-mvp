@@ -14,3 +14,5 @@
 .eslintcache
 **/coverage/
 **/.vite/
+
+**/.venv/

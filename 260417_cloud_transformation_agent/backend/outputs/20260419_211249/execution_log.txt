@@ -1,0 +1,13 @@
+Migration planner: building request
+
+---
+
+Invoking Azure OpenAI (structured migration plan)
+
+---
+
+Received structured MigrationPlan
+
+---
+
+Rendered markdown from structured plan
