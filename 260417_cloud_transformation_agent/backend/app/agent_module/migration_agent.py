@@ -103,10 +103,14 @@ class MigrationAgent:
         token_provider = get_bearer_token_provider(
             credential, "https://cognitiveservices.azure.com/.default"
         )
+        # Mirror the mapping agent: longer timeout + more retries to survive
+        # occasional TLS resets on corp networks.
         self.client = AzureOpenAI(
             azure_endpoint=azure_openai_endpoint.rstrip("/"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
             azure_ad_token_provider=token_provider,
+            max_retries=int(os.getenv("AZURE_OPENAI_MAX_RETRIES", "5")),
+            timeout=float(os.getenv("AZURE_OPENAI_TIMEOUT", "120")),
         )
 
         prompt_path = Path(__file__).resolve().parent / "prompts" / "migration_planner.yaml"
@@ -121,6 +125,7 @@ class MigrationAgent:
         target_azure_region: str = "eastus",
         migration_goals: str = "",
         output_format: str = "json",
+        azure_mappings: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         execution_log: List[str] = ["Migration planner: building request"]
         aws_scope = (aws_resource_spec or "").strip()
@@ -135,10 +140,27 @@ class MigrationAgent:
             "Standard lift-and-shift with security and operability best practices."
         )
 
+        # When the UI has already run the mapping agent, the user saw and
+        # implicitly approved those AWS→Azure target choices — treat them as
+        # authoritative so the generated Terraform uses exactly the same
+        # ``azurerm_*`` types shown on screen.
+        mapping_block = ""
+        if azure_mappings:
+            mapping_block = (
+                "\n\nAuthoritative AWS → Azure target mappings (already reviewed "
+                "by the user — the Terraform module MUST use these exact "
+                "`azurerm_*` resource types; do NOT substitute alternatives):\n"
+                f"{json.dumps(azure_mappings, indent=2, default=str)}"
+            )
+            execution_log.append(
+                f"Using {len(azure_mappings)} pre-computed Azure mapping(s)"
+            )
+
         user_content = (
             f"AWS resources and scope:\n{aws_scope}\n\n"
             f"Target Azure region preference: {target_azure_region}\n"
             f"Migration goals and constraints: {goals}"
+            f"{mapping_block}"
         )
 
         messages = [

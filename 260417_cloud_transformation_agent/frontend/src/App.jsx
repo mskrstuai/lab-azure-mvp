@@ -3,7 +3,7 @@ import { useState } from "react";
 import AwsResourcesPage from "./pages/AwsResourcesPage";
 import DeployPage from "./pages/DeployPage";
 import HomePage from "./pages/HomePage";
-import MigrationPage from "./pages/MigrationPage";
+import MigrationPage, { useAzureMapping } from "./pages/MigrationPage";
 
 const TABS = [
   { key: "home", label: "Overview", icon: "☁️" },
@@ -30,6 +30,13 @@ function App() {
   // summary table on the Plan page.
   const [scopedRows, setScopedRows] = useState([]);
   const [scopedMeta, setScopedMeta] = useState(null);
+
+  /** Lives in App so Mapping results survive tab switches (Plan ↔ other pages). */
+  const mapping = useAzureMapping(
+    scopedRows,
+    azureRegion,
+    scopedMeta?.region || "",
+  );
 
   const handleSendToMigration = ({
     spec,
@@ -91,6 +98,7 @@ function App() {
             scopedRows={scopedRows}
             scopedMeta={scopedMeta}
             onGoToDiscover={() => setActiveTab("aws")}
+            mapping={mapping}
           />
         )}
         {activeTab === "deploy" && (

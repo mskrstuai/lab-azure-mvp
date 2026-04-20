@@ -99,6 +99,7 @@ def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
             target_azure_region=params.get("target_azure_region", "eastus"),
             migration_goals=params.get("migration_goals", ""),
             output_format=params.get("output_format", "json"),
+            azure_mappings=params.get("azure_mappings") or None,
         )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -166,6 +167,12 @@ def start_migration_plan(request: dict, background_tasks: BackgroundTasks):
             detail="AZURE_OPENAI_ENDPOINT must be set in .env or environment.",
         )
 
+    azure_mappings = request.get("azure_mappings")
+    if azure_mappings is not None and not isinstance(azure_mappings, list):
+        raise HTTPException(
+            status_code=400, detail="azure_mappings must be a list if provided"
+        )
+
     job_id = str(uuid.uuid4())
     params = {
         "aws_resource_spec": aws_resource_spec,
@@ -174,6 +181,7 @@ def start_migration_plan(request: dict, background_tasks: BackgroundTasks):
         "output_format": request.get("output_format", "json"),
         "llm_deployment": request.get("llm_deployment"),
         "endpoint": request.get("endpoint"),
+        "azure_mappings": azure_mappings or [],
     }
 
     with _jobs_lock:
@@ -202,6 +210,68 @@ def get_migration_status(job_id: str):
     if job["status"] == "failed" and job.get("error"):
         out["error"] = job["error"]
     return out
+
+
+_mapping_agent_cls = None
+
+
+def _get_mapping_agent_class():
+    global _mapping_agent_cls
+    if _mapping_agent_cls is None:
+        from app.agent_module.mapping_agent import AzureMappingAgent
+
+        _mapping_agent_cls = AzureMappingAgent
+    return _mapping_agent_cls
+
+
+@router.post("/azure-mapping")
+def map_resources_to_azure(request: dict):
+    """Map selected AWS resources to candidate Azure targets (sync LLM call).
+
+    Request body:
+        {
+          "resources": [ {service, type, name, id, arn, region, tags}, ... ],
+          "target_azure_region": "eastus"   // optional
+        }
+    Response:
+        { "mappings": [ {aws_key, azure_service, azure_resource_type, rationale, ...} ] }
+    """
+    import os
+
+    raw_resources = request.get("resources") or []
+    if not isinstance(raw_resources, list) or len(raw_resources) == 0:
+        raise HTTPException(
+            status_code=400, detail="'resources' must be a non-empty list"
+        )
+    if len(raw_resources) > 200:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many resources ({len(raw_resources)}); cap is 200.",
+        )
+
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    if not endpoint:
+        raise HTTPException(
+            status_code=503,
+            detail="AZURE_OPENAI_ENDPOINT must be set in .env or environment.",
+        )
+
+    AzureMappingAgent = _get_mapping_agent_class()
+    agent = AzureMappingAgent(
+        llm_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+        azure_openai_endpoint=endpoint,
+    )
+    result = agent.run(
+        resources=raw_resources,
+        target_azure_region=str(request.get("target_azure_region") or "eastus"),
+        source_aws_region=str(request.get("source_aws_region") or ""),
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=result["error"])
+    return {
+        "mappings": result.get("mappings") or [],
+        "execution_log": result.get("execution_log") or [],
+    }
 
 
 @router.get("/active-job")

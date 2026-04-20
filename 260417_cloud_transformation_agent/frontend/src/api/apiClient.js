@@ -13,6 +13,34 @@ export async function startMigrationPlan(params) {
   return res.json();
 }
 
+/**
+ * Synchronously fetch Azure target mappings WITHOUT mutating React state —
+ * used by flows like "Run migration plan" that want to ensure we have fresh
+ * mappings before kicking off the planner.
+ */
+export async function fetchAzureMappings({
+  resources,
+  targetAzureRegion,
+  sourceAwsRegion,
+  signal,
+} = {}) {
+  const res = await fetch(`${API_BASE}/migration/azure-mapping`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      resources,
+      target_azure_region: targetAzureRegion || "eastus",
+      source_aws_region: sourceAwsRegion || "",
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to map resources to Azure");
+  }
+  return res.json();
+}
+
 export async function getMigrationStatus(jobId) {
   const res = await fetch(`${API_BASE}/migration/run/${jobId}`);
   if (!res.ok) throw new Error("Failed to get status");
