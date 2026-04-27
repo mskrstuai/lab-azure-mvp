@@ -1,0 +1,13 @@
+Migration planner: building request
+
+---
+
+Invoking Azure OpenAI (structured migration plan + Terraform module)
+
+---
+
+Received structured MigrationPlan (terraform files: 5)
+
+---
+
+Rendered markdown from structured plan

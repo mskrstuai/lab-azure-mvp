@@ -15,11 +15,11 @@ function StatusBanner({ status }) {
   if (!status || status.ready) return null;
   return (
     <div className="form-error" style={{ marginBottom: 16 }}>
-      <strong>AWS not ready:</strong> {status.reason || "Unknown error"}.
+      <strong>AWS 사용 불가:</strong> {status.reason || "알 수 없는 오류"}.
       <div style={{ marginTop: 6, fontSize: "0.85rem", color: "var(--color-text-light)" }}>
-        Set <code>AWS_PROFILE</code> (e.g. <code>export AWS_PROFILE=default</code>) or{" "}
-        <code>AWS_ACCESS_KEY_ID</code>/<code>AWS_SECRET_ACCESS_KEY</code> in{" "}
-        <code>backend/.env</code>, then restart <code>uvicorn</code>.
+        <code>AWS_PROFILE</code>을 설정(예: <code>export AWS_PROFILE=default</code>)하거나{" "}
+        <code>AWS_ACCESS_KEY_ID</code>/<code>AWS_SECRET_ACCESS_KEY</code>를{" "}
+        <code>backend/.env</code>에 넣은 뒤 <code>uvicorn</code>을 다시 시작하세요.
       </div>
     </div>
   );
@@ -255,7 +255,7 @@ function CombinedResourcesTable({
     return (
       <div className="empty-state" style={{ marginTop: 16 }}>
         <div className="icon">📭</div>
-        <p>No resources in scope.</p>
+        <p>범위에 리소스가 없습니다.</p>
       </div>
     );
   }
@@ -465,7 +465,7 @@ function DetailTable({ row }) {
   if (pairs.length === 0 && tagEntries.length === 0) {
     return (
       <div style={{ color: "var(--color-text-light)", fontSize: "0.85rem" }}>
-        No additional details available.
+        추가 세부 정보가 없습니다.
       </div>
     );
   }
@@ -726,7 +726,7 @@ function AwsResourcesPage({ onSendToMigration }) {
   const runScan = useCallback(
     ({ silent = false } = {}) => {
       if (!region) {
-        if (!silent) setError("Select a region first.");
+        if (!silent) setError("먼저 Region을 선택하세요.");
         return;
       }
       if (services.length === 0) return;
@@ -820,10 +820,9 @@ function AwsResourcesPage({ onSendToMigration }) {
     <section className="page-section">
       <h2 className="page-title">🔎 Discover &amp; Select</h2>
       <p className="page-desc">
-        Pick a region and (optionally) an <strong>AWS Resource Group</strong>.
-        All resources in the group are listed in one shot — no per-service
-        picking. Push the scope straight into the Migration planner when
-        you're ready. Read-only, uses the backend's default credential chain.
+        Region을 고르고 (선택) <strong>AWS Resource Group</strong>을 지정합니다. 그룹
+        멤버가 한 번에 표시되며 서비스별로 일일이 고를 필요가 없습니다. 준비되면 범위를
+        Plan 탭으로 보냅니다. 읽기 전용이며 백엔드의 기본 자격 증명 체인을 사용합니다.
       </p>
 
       <StatusBanner status={status} />
@@ -854,7 +853,7 @@ function AwsResourcesPage({ onSendToMigration }) {
             <label>
               Resource Group{" "}
               <span style={{ color: "var(--color-text-light)", fontWeight: 400, fontSize: "0.75rem" }}>
-                (optional)
+                (선택)
               </span>
             </label>
             <select
@@ -864,10 +863,10 @@ function AwsResourcesPage({ onSendToMigration }) {
             >
               <option value="">
                 {rgLoading
-                  ? "Loading resource groups..."
+                  ? "Resource Group 목록 로드 중…"
                   : resourceGroups.length === 0
-                  ? "(no resource groups found)"
-                  : "All resources (no filter)"}
+                  ? "(Resource Group 없음)"
+                  : "전체 리소스(필터 없음)"}
               </option>
               {resourceGroups.map((g) => (
                 <option key={g.arn || g.name} value={g.name}>
@@ -905,8 +904,8 @@ function AwsResourcesPage({ onSendToMigration }) {
             onClick={handleSendToMigration}
             title={
               selected.size > 0
-                ? `Send ${selected.size} selected resource(s) to the Plan page`
-                : "Send all discovered resources to the Plan page"
+                ? `선택한 ${selected.size}개 리소스를 Plan 탭으로 보냄`
+                : "조회한 모든 리소스를 Plan 탭으로 보냄"
             }
           >
             📤 Plan{selected.size > 0 ? ` (${selected.size})` : ""}
@@ -923,7 +922,8 @@ function AwsResourcesPage({ onSendToMigration }) {
               marginBottom: 8,
             }}
           >
-            Scanned <strong style={{ color: "var(--color-text)" }}>{result.region}</strong>
+            Region:{" "}
+            <strong style={{ color: "var(--color-text)" }}>{result.region}</strong>
             {result.resource_group && (
               <>
                 {" / "}
@@ -931,11 +931,11 @@ function AwsResourcesPage({ onSendToMigration }) {
               </>
             )}
             {" — "}
-            <strong style={{ color: "var(--color-text)" }}>{totalCount}</strong> resource(s)
+            Resources: <strong style={{ color: "var(--color-text)" }}>{totalCount}</strong> items
             {selected.size > 0 && (
               <>
                 {" · "}
-                <strong style={{ color: "var(--color-text)" }}>{selected.size}</strong> selected
+                <strong style={{ color: "var(--color-text)" }}>{selected.size}</strong> items selected
               </>
             )}
             .

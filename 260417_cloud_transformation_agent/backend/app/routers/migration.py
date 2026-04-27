@@ -2,7 +2,10 @@
 
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -71,9 +74,16 @@ def _get_agent_class():
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 OUTPUTS_ROOT = BACKEND_ROOT / "outputs"
+# Working copies for `terraform apply` are kept in a hidden directory so
+# uvicorn's `--reload` watcher (which excludes dot-dirs by default) doesn't
+# restart the server every time terraform writes state files.
+DEPLOYMENTS_ROOT = BACKEND_ROOT / ".deployments"
 
 _jobs: Dict[str, Dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+
+_deploys: Dict[str, Dict[str, Any]] = {}
+_deploys_lock = threading.Lock()
 
 
 def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
@@ -366,3 +376,311 @@ def get_terraform_file(run_id: str, filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return {"filename": safe, "content": path.read_text(encoding="utf-8")}
+
+
+# ---------------------------------------------------------------------------
+# In-app Terraform deploy (replaces the zip-download CLI workflow)
+# ---------------------------------------------------------------------------
+
+_DEPLOY_ALLOWED_ACTIONS = {"apply", "destroy"}
+
+
+def _run_cli(cmd: List[str], timeout: float = 15.0) -> Dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "returncode": proc.returncode,
+        }
+    except FileNotFoundError:
+        return {"ok": False, "stdout": "", "stderr": "binary not found", "returncode": 127}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "stdout": "", "stderr": "timed out", "returncode": -1}
+
+
+def _detect_terraform() -> Dict[str, Any]:
+    res = _run_cli(["terraform", "version", "-json"])
+    if not res["ok"]:
+        return {"installed": False, "version": "", "error": res["stderr"] or "terraform not found"}
+    version = ""
+    try:
+        version = json.loads(res["stdout"]).get("terraform_version", "")
+    except Exception:
+        m = re.search(r"v([0-9]+\.[0-9]+\.[0-9]+)", res["stdout"])
+        if m:
+            version = m.group(1)
+    return {"installed": True, "version": version}
+
+
+def _detect_azure() -> Dict[str, Any]:
+    """Probe `az` CLI: is it installed, who is signed in, what subs are visible?"""
+    ver = _run_cli(["az", "version"])
+    if not ver["ok"]:
+        return {
+            "installed": False,
+            "signed_in": False,
+            "subscriptions": [],
+            "default_subscription_id": "",
+            "error": ver["stderr"] or "az not found",
+        }
+    subs_res = _run_cli(
+        ["az", "account", "list", "--query", "[].{id:id,name:name,isDefault:isDefault,tenantId:tenantId}", "-o", "json"],
+        timeout=20.0,
+    )
+    if not subs_res["ok"]:
+        return {
+            "installed": True,
+            "signed_in": False,
+            "subscriptions": [],
+            "default_subscription_id": "",
+            "error": (subs_res["stderr"] or subs_res["stdout"] or "").strip()
+            or "az login required",
+        }
+    try:
+        subs = json.loads(subs_res["stdout"] or "[]")
+    except Exception:
+        subs = []
+    default_id = next((s.get("id", "") for s in subs if s.get("isDefault")), "")
+    return {
+        "installed": True,
+        "signed_in": len(subs) > 0,
+        "subscriptions": subs,
+        "default_subscription_id": default_id,
+    }
+
+
+@router.get("/deploy/preflight")
+def deploy_preflight():
+    """Check that terraform + az are usable from the backend host."""
+    return {
+        "terraform": _detect_terraform(),
+        "azure": _detect_azure(),
+    }
+
+
+def _safe_run_id(run_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", run_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid run_id")
+    return run_id
+
+
+def _sync_terraform_workdir(run_id: str) -> Path:
+    """Copy generated .tf files into the persistent deploy working dir.
+
+    State files (`terraform.tfstate`, `.terraform/`) stay put across calls so
+    a subsequent `destroy` can find resources created by `apply`.
+    """
+    src = OUTPUTS_ROOT / run_id / "terraform"
+    if not src.is_dir():
+        raise HTTPException(status_code=404, detail="No terraform module for this run")
+    work = DEPLOYMENTS_ROOT / run_id
+    work.mkdir(parents=True, exist_ok=True)
+    for f in src.iterdir():
+        if f.is_file():
+            shutil.copy2(f, work / f.name)
+    return work
+
+
+def _append_log(deploy_id: str, line: str) -> None:
+    with _deploys_lock:
+        d = _deploys.get(deploy_id)
+        if d is not None:
+            d["logs"].append(line)
+
+
+def _set_step(deploy_id: str, step: str) -> None:
+    with _deploys_lock:
+        d = _deploys.get(deploy_id)
+        if d is not None:
+            d["current_step"] = step
+
+
+def _stream_subprocess(deploy_id: str, label: str, cmd: List[str], cwd: Path, env: Dict[str, str]) -> int:
+    _set_step(deploy_id, label)
+    _append_log(deploy_id, f"")
+    _append_log(deploy_id, f"$ [{label}] {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        _append_log(deploy_id, f"ERROR: {exc}")
+        return 127
+    with _deploys_lock:
+        d = _deploys.get(deploy_id)
+        if d is not None:
+            d["pid"] = proc.pid
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        _append_log(deploy_id, raw.rstrip("\n"))
+    return proc.wait()
+
+
+def _run_deploy_worker(deploy_id: str, run_id: str, action: str, subscription_id: str, tenant_id: str) -> None:
+    try:
+        with _deploys_lock:
+            _deploys[deploy_id]["status"] = "running"
+            _deploys[deploy_id]["started_at"] = time.time()
+
+        work = _sync_terraform_workdir(run_id)
+
+        env = os.environ.copy()
+        if subscription_id:
+            env["ARM_SUBSCRIPTION_ID"] = subscription_id
+        if tenant_id:
+            env["ARM_TENANT_ID"] = tenant_id
+        env["TF_IN_AUTOMATION"] = "1"
+        env["TF_INPUT"] = "0"
+
+        if subscription_id:
+            _append_log(deploy_id, f"Using Azure subscription: {subscription_id}")
+        _append_log(deploy_id, f"Working directory: {work}")
+
+        if action == "apply":
+            steps = [
+                ("init", ["terraform", "init", "-input=false", "-no-color"]),
+                ("plan", ["terraform", "plan", "-input=false", "-no-color", "-out=tfplan"]),
+                ("apply", ["terraform", "apply", "-input=false", "-no-color", "-auto-approve", "tfplan"]),
+            ]
+        else:
+            steps = [
+                ("init", ["terraform", "init", "-input=false", "-no-color"]),
+                ("destroy", ["terraform", "destroy", "-input=false", "-no-color", "-auto-approve"]),
+            ]
+
+        for label, cmd in steps:
+            rc = _stream_subprocess(deploy_id, label, cmd, work, env)
+            if rc != 0:
+                raise RuntimeError(f"step '{label}' failed with exit code {rc}")
+
+        _append_log(deploy_id, "")
+        _append_log(deploy_id, "✓ Deployment finished successfully.")
+        with _deploys_lock:
+            _deploys[deploy_id].update({
+                "status": "succeeded",
+                "current_step": "done",
+                "completed_at": time.time(),
+            })
+    except Exception as exc:
+        _append_log(deploy_id, "")
+        _append_log(deploy_id, f"✗ Deployment failed: {exc}")
+        with _deploys_lock:
+            _deploys[deploy_id].update({
+                "status": "failed",
+                "error": str(exc),
+                "completed_at": time.time(),
+            })
+
+
+@router.post("/outputs/{run_id}/deploy")
+def start_deploy(run_id: str, request: dict):
+    run_id = _safe_run_id(run_id)
+    src = OUTPUTS_ROOT / run_id / "terraform"
+    if not src.is_dir():
+        raise HTTPException(status_code=404, detail="No terraform module for this run")
+
+    action = (request.get("action") or "apply").strip().lower()
+    if action not in _DEPLOY_ALLOWED_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"action must be one of {sorted(_DEPLOY_ALLOWED_ACTIONS)}")
+
+    subscription_id = (request.get("subscription_id") or "").strip()
+    tenant_id = (request.get("tenant_id") or "").strip()
+
+    # Block concurrent deploys for the same run_id — terraform state isn't
+    # safe to operate on from two workers at once.
+    with _deploys_lock:
+        for did, d in _deploys.items():
+            if d.get("run_id") == run_id and d["status"] in ("pending", "running"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A {d['action']} is already running for this run (deploy_id={did}).",
+                )
+
+        deploy_id = str(uuid.uuid4())
+        _deploys[deploy_id] = {
+            "deploy_id": deploy_id,
+            "run_id": run_id,
+            "action": action,
+            "subscription_id": subscription_id,
+            "status": "pending",
+            "current_step": "queued",
+            "logs": [],
+            "error": None,
+            "started_at": None,
+            "completed_at": None,
+            "pid": None,
+        }
+
+    thread = threading.Thread(
+        target=_run_deploy_worker,
+        args=(deploy_id, run_id, action, subscription_id, tenant_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"deploy_id": deploy_id, "status": "pending", "action": action, "run_id": run_id}
+
+
+@router.get("/deploy/{deploy_id}")
+def get_deploy_status(deploy_id: str, since: int = 0):
+    """Poll deploy status. Pass `since` to receive only new log lines."""
+    with _deploys_lock:
+        d = _deploys.get(deploy_id)
+        if not d:
+            raise HTTPException(status_code=404, detail="Deploy not found")
+        all_logs = d["logs"]
+        total = len(all_logs)
+        if since < 0:
+            since = 0
+        if since > total:
+            since = total
+        new_lines = all_logs[since:]
+        return {
+            "deploy_id": deploy_id,
+            "run_id": d["run_id"],
+            "action": d["action"],
+            "status": d["status"],
+            "current_step": d.get("current_step", ""),
+            "subscription_id": d.get("subscription_id", ""),
+            "error": d.get("error"),
+            "started_at": d.get("started_at"),
+            "completed_at": d.get("completed_at"),
+            "log_offset": since,
+            "log_total": total,
+            "log_lines": new_lines,
+        }
+
+
+@router.get("/outputs/{run_id}/deploys")
+def list_deploys_for_run(run_id: str):
+    run_id = _safe_run_id(run_id)
+    with _deploys_lock:
+        items = [
+            {
+                "deploy_id": did,
+                "run_id": d["run_id"],
+                "action": d["action"],
+                "status": d["status"],
+                "current_step": d.get("current_step", ""),
+                "started_at": d.get("started_at"),
+                "completed_at": d.get("completed_at"),
+            }
+            for did, d in _deploys.items()
+            if d["run_id"] == run_id
+        ]
+    items.sort(key=lambda x: (x.get("started_at") or 0), reverse=True)
+    return {"deploys": items}

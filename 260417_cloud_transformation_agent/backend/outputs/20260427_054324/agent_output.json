@@ -1,0 +1,195 @@
+{
+  "summary": "Migrate the AWS stack to Azure managed services in eastus using a spoke VNet pattern: Application Load Balancer maps to Azure Application Gateway, ECS Fargate services map to Azure Container Apps in a managed environment, RDS PostgreSQL maps to Azure Database for PostgreSQL Flexible Server, S3 static assets map to Azure Storage Account with blob containers, ElastiCache Redis maps to Azure Cache for Redis, Secrets Manager maps to Azure Key Vault, and CloudWatch maps to Log Analytics plus Azure Monitor diagnostics. The Terraform module deploys a secure baseline with private networking for data services, managed identities, centralized logging, and ingress suitable for low-downtime cutover.",
+  "assessment": "Moderate complexity. Main dependencies are target hub-spoke connectivity design, DNS/certificate strategy for ingress, database migration approach, and container image registry/source. The provided Terraform uses safe defaults and managed services, but final production rollout needs confirmation of CIDRs, private DNS integration with the hub, TLS certificates, and application container images/environment variables.",
+  "steps": [
+    {
+      "phase": "Discover",
+      "description": "Inventory current ALB listeners/rules, ECS services/task definitions, PostgreSQL version/size/extensions, Redis usage, S3 buckets/static website behavior, Secrets Manager secrets, and CloudWatch dashboards/alarms/log retention. Capture DNS names, certificates, scaling thresholds, and network dependencies.",
+      "aws_components": [
+        "Application Load Balancer",
+        "ECS Fargate",
+        "RDS PostgreSQL",
+        "S3",
+        "ElastiCache Redis",
+        "Secrets Manager",
+        "CloudWatch"
+      ],
+      "azure_targets": [
+        "Application Gateway",
+        "Azure Container Apps",
+        "Azure Database for PostgreSQL Flexible Server",
+        "Storage Account",
+        "Azure Cache for Redis",
+        "Key Vault",
+        "Log Analytics Workspace / Azure Monitor"
+      ],
+      "notes": "Do not begin cutover until app config, image sources, and database compatibility are validated. Confirm whether static assets require CDN/Front Door beyond current scope."
+    },
+    {
+      "phase": "Design",
+      "description": "Design a spoke VNet in eastus aligned to the hub-spoke model with dedicated subnets for Application Gateway, Container Apps infrastructure, private endpoints, database, and cache. Use private access for PostgreSQL, Redis, and Key Vault. Plan DNS resolution to the hub and certificate management for HTTPS ingress.",
+      "aws_components": [
+        "VPC/Subnets",
+        "Security Groups",
+        "ALB",
+        "RDS",
+        "ElastiCache",
+        "Secrets Manager"
+      ],
+      "azure_targets": [
+        "Virtual Network/Subnets",
+        "Network Security Groups",
+        "Application Gateway WAF_v2",
+        "Private DNS Zones",
+        "PostgreSQL Flexible Server",
+        "Azure Cache for Redis",
+        "Key Vault"
+      ],
+      "notes": "If the hub is pre-existing, peer this spoke and link private DNS zones as needed. CIDRs are parameterized because they were not provided."
+    },
+    {
+      "phase": "Build",
+      "description": "Deploy the Azure landing components with Terraform: resource group, VNet/subnets, NSGs, Log Analytics, Key Vault, Storage Account/containers, PostgreSQL Flexible Server, Redis, Container Apps environment and apps, Application Gateway, and monitoring diagnostics.",
+      "aws_components": [
+        "CloudWatch",
+        "Secrets Manager",
+        "S3",
+        "RDS",
+        "ElastiCache",
+        "ECS Fargate",
+        "ALB"
+      ],
+      "azure_targets": [
+        "Azure Monitor",
+        "Key Vault",
+        "Storage Account",
+        "PostgreSQL Flexible Server",
+        "Azure Cache for Redis",
+        "Container Apps",
+        "Application Gateway"
+      ],
+      "notes": "The module uses managed identity for Container Apps and stores generated DB admin password in Key Vault. Application images are variable-driven."
+    },
+    {
+      "phase": "Migrate Data",
+      "description": "Migrate PostgreSQL using Azure Database Migration Service or native logical replication/pg_dump depending on size and downtime tolerance. Sync S3 static assets to Blob Storage with AzCopy or Storage Mover. Recreate Redis data only if persistence/use case requires it; otherwise warm cache after cutover. Replicate secrets into Key Vault.",
+      "aws_components": [
+        "RDS PostgreSQL",
+        "S3",
+        "ElastiCache Redis",
+        "Secrets Manager"
+      ],
+      "azure_targets": [
+        "PostgreSQL Flexible Server",
+        "Blob Storage",
+        "Azure Cache for Redis",
+        "Key Vault"
+      ],
+      "notes": "For minimal downtime, use continuous replication for PostgreSQL until final cutover. Validate extensions, parameter settings, and connection strings."
+    },
+    {
+      "phase": "Cutover",
+      "description": "Deploy application containers to Container Apps, validate through Application Gateway, switch application secrets/config to Azure endpoints, then update DNS to Azure ingress. Keep AWS stack in read-only or standby mode during observation window.",
+      "aws_components": [
+        "ALB",
+        "ECS Fargate",
+        "Route53 if used externally"
+      ],
+      "azure_targets": [
+        "Application Gateway",
+        "Container Apps",
+        "Azure DNS or external DNS"
+      ],
+      "notes": "Use low TTL before cutover. Blue/green or canary is possible by adding additional backend routing rules if needed."
+    },
+    {
+      "phase": "Validate",
+      "description": "Run smoke, performance, and failover tests; verify logs, metrics, alerts, backups, and private connectivity. Confirm static asset delivery, DB performance, Redis connectivity, and secret retrieval via managed identity.",
+      "aws_components": [
+        "CloudWatch",
+        "ALB",
+        "ECS",
+        "RDS",
+        "S3",
+        "ElastiCache"
+      ],
+      "azure_targets": [
+        "Azure Monitor",
+        "Application Gateway",
+        "Container Apps",
+        "PostgreSQL Flexible Server",
+        "Storage Account",
+        "Azure Cache for Redis"
+      ],
+      "notes": "Validation criteria: HTTPS 200 responses, successful app-to-DB and app-to-Redis connections, expected log ingestion, backup policies enabled, and no public exposure for private services."
+    }
+  ],
+  "risks": [
+    {
+      "category": "Data",
+      "detail": "PostgreSQL version/extensions or parameter incompatibilities may block migration or cause runtime issues.",
+      "mitigation": "Assess engine version, extensions, collations, and parameter groups early; test restore/replication into Azure PostgreSQL Flexible Server before cutover."
+    },
+    {
+      "category": "Networking",
+      "detail": "Hub-spoke DNS and private endpoint/private service resolution may fail if private DNS zones and peering are not integrated correctly.",
+      "mitigation": "Confirm hub DNS architecture, zone linking, and peering/UDR requirements before deployment; validate name resolution from application subnet."
+    },
+    {
+      "category": "Security",
+      "detail": "Ingress TLS and secret access may be misconfigured, exposing services or causing outages.",
+      "mitigation": "Use Key Vault, managed identities, HTTPS listeners, and least-privilege RBAC; confirm certificate source and access policies before production."
+    },
+    {
+      "category": "Operations",
+      "detail": "Container Apps may differ from ECS Fargate in scaling, networking, and revision behavior, affecting application runtime.",
+      "mitigation": "Load test Container Apps with production-like settings, tune min/max replicas and probes, and validate environment variables and secret references."
+    },
+    {
+      "category": "Availability",
+      "detail": "Cutover may incur downtime if database sync lag or DNS propagation is not controlled.",
+      "mitigation": "Use continuous DB replication where possible, reduce DNS TTL ahead of time, and execute a rehearsed rollback plan."
+    }
+  ],
+  "open_questions": [
+    "What are the required VNet and subnet CIDRs for the spoke, and will it be peered to an existing hub VNet?",
+    "Should ingress use Azure Application Gateway only, or also Azure Front Door/CDN for global/static asset acceleration?",
+    "What container images, ports, CPU/memory, and autoscaling settings are required for each ECS service?",
+    "How many ECS services need to be migrated, and do they require internal-only or public ingress?",
+    "What PostgreSQL version, storage size, HA requirement, backup retention, and maintenance window are needed?",
+    "Is Redis required in a private network only, and what SKU/capacity is needed?",
+    "What S3 buckets/containers are required, and should static assets be publicly accessible or private behind the application?",
+    "What secrets must be created in Key Vault beyond the generated database password?",
+    "What TLS certificate source should be used for Application Gateway listeners: uploaded PFX, Key Vault certificate, or existing enterprise PKI?",
+    "What alerts, log retention, and diagnostic settings are required to match current CloudWatch behavior?",
+    "Is Azure Container Registry available, or should images be pulled from another registry?",
+    "Are there compliance requirements for customer-managed keys, private endpoints for Storage/Key Vault, or zone-redundancy?"
+  ],
+  "terraform": [
+    {
+      "filename": "providers.tf",
+      "content": "terraform {\n  required_version = \">= 1.5.0\"\n\n  required_providers {\n    azurerm = {\n      source  = \"hashicorp/azurerm\"\n      version = \"~> 3.100\"\n    }\n    random = {\n      source  = \"hashicorp/random\"\n      version = \"~> 3.6\"\n    }\n  }\n}\n\nprovider \"azurerm\" {\n  features {}\n}\n",
+      "description": "Terraform and provider requirements for AzureRM and random."
+    },
+    {
+      "filename": "variables.tf",
+      "content": "variable \"location\" {\n  description = \"Azure region for deployment.\"\n  type        = string\n  default     = \"eastus\"\n}\n\nvariable \"resource_group_name\" {\n  description = \"Name of the resource group to create.\"\n  type        = string\n  default     = \"rg-aws-migration-eastus\"\n}\n\nvariable \"environment\" {\n  description = \"Environment name used in resource naming.\"\n  type        = string\n  default     = \"prod\"\n}\n\nvariable \"tags\" {\n  description = \"Tags applied to supported resources.\"\n  type        = map(string)\n  default = {\n    environment = \"prod\"\n    workload    = \"aws-migration\"\n    managed_by  = \"terraform\"\n  }\n}\n\nvariable \"vnet_address_space\" {\n  description = \"Address space for the spoke virtual network.\"\n  type        = list(string)\n  default     = [\"10.50.0.0/16\"]\n}\n\nvariable \"subnet_prefixes\" {\n  description = \"Subnet CIDRs for application gateway, container apps, private endpoints, database, and cache.\"\n  type = object({\n    appgw          = string\n    container_apps = string\n    private_endpoints = string\n    database       = string\n    cache          = string\n  })\n  default = {\n    appgw             = \"10.50.0.0/24\"\n    container_apps    = \"10.50.1.0/23\"\n    private_endpoints = \"10.50.3.0/24\"\n    database          = \"10.50.4.0/24\"\n    cache             = \"10.50.5.0/24\"\n  }\n}\n\nvariable \"container_apps\" {\n  description = \"Container Apps to deploy, representing ECS Fargate services.\"\n  type = map(object({\n    image          = string\n    target_port    = number\n    cpu            = number\n    memory         = string\n    min_replicas   = number\n    max_replicas   = number\n    external_ingress = bool\n  }))\n  default = {\n    app = {\n      image            = \"mcr.microsoft.com/azuredocs/containerapps-helloworld:latest\"\n      target_port      = 80\n      cpu              = 0.5\n      memory           = \"1Gi\"\n      min_replicas     = 1\n      max_replicas     = 3\n      external_ingress = true\n    }\n  }\n}\n\nvariable \"postgresql_version\" {\n  description = \"Azure Database for PostgreSQL Flexible Server version.\"\n  type        = string\n  default     = \"15\"\n}\n\nvariable \"db_sku_name\" {\n  description = \"SKU for PostgreSQL Flexible Server.\"\n  type        = string\n  default     = \"B_Standard_B1ms\"\n}\n\nvariable \"db_storage_mb\" {\n  description = \"Allocated PostgreSQL storage in MB.\"\n  type        = number\n  default     = 32768\n}\n\nvariable \"db_backup_retention_days\" {\n  description = \"Backup retention for PostgreSQL Flexible Server.\"\n  type        = number\n  default     = 7\n}\n\nvariable \"db_admin_username\" {\n  description = \"Administrator username for PostgreSQL Flexible Server.\"\n  type        = string\n  default     = \"pgadmin\"\n}\n\nvariable \"redis_capacity\" {\n  description = \"Azure Cache for Redis capacity.\"\n  type        = number\n  default     = 1\n}\n\nvariable \"redis_family\" {\n  description = \"Azure Cache for Redis family.\"\n  type        = string\n  default     = \"C\"\n}\n\nvariable \"redis_sku_name\" {\n  description = \"Azure Cache for Redis SKU.\"\n  type        = string\n  default     = \"Standard\"\n}\n\nvariable \"storage_account_tier\" {\n  description = \"Storage account tier.\"\n  type        = string\n  default     = \"Standard\"\n}\n\nvariable \"storage_account_replication_type\" {\n  description = \"Storage account replication type.\"\n  type        = string\n  default     = \"LRS\"\n}\n\nvariable \"storage_containers\" {\n  description = \"Blob containers to create for static assets.\"\n  type        = list(string)\n  default     = [\"static-assets\"]\n}\n\nvariable \"log_analytics_retention_in_days\" {\n  description = \"Retention for Log Analytics workspace.\"\n  type        = number\n  default     = 30\n}\n\nvariable \"application_gateway_sku_name\" {\n  description = \"Application Gateway SKU name.\"\n  type        = string\n  default     = \"WAF_v2\"\n}\n\nvariable \"application_gateway_sku_tier\" {\n  description = \"Application Gateway SKU tier.\"\n  type        = string\n  default     = \"WAF_v2\"\n}\n\nvariable \"application_gateway_capacity\" {\n  description = \"Application Gateway instance capacity.\"\n  type        = number\n  default     = 2\n}\n\nvariable \"application_gateway_frontend_port\" {\n  description = \"Frontend port for Application Gateway listener.\"\n  type        = number\n  default     = 80\n}\n\nvariable \"key_vault_sku_name\" {\n  description = \"Key Vault SKU name.\"\n  type        = string\n  default     = \"standard\"\n}\n",
+      "description": "Input variables with safe defaults for networking, compute, database, cache, storage, and monitoring."
+    },
+    {
+      "filename": "main.tf",
+      "content": "data \"azurerm_client_config\" \"current\" {}\n\nlocals {\n  name_prefix          = substr(replace(\"${var.environment}${var.location}\", \"-\", \"\"), 0, 12)\n  storage_account_name = lower(substr(\"st${replace(var.environment, \"-\", \"\")}${replace(var.location, \"-\", \"\")}\", 0, 24))\n  common_tags          = merge(var.tags, { environment = var.environment })\n  first_container_app  = keys(var.container_apps)[0]\n}\n\n# Resource group for all migrated services.\nresource \"azurerm_resource_group\" \"main\" {\n  name     = var.resource_group_name\n  location = var.location\n  tags     = local.common_tags\n}\n\n# Log Analytics workspace for Azure Monitor and Container Apps logs.\nresource \"azurerm_log_analytics_workspace\" \"main\" {\n  name                = \"law-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  sku                 = \"PerGB2018\"\n  retention_in_days   = var.log_analytics_retention_in_days\n  tags                = local.common_tags\n}\n\n# Spoke virtual network aligned to hub-spoke networking.\nresource \"azurerm_virtual_network\" \"main\" {\n  name                = \"vnet-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  address_space       = var.vnet_address_space\n  tags                = local.common_tags\n}\n\n# Network security group for the application gateway subnet.\nresource \"azurerm_network_security_group\" \"appgw\" {\n  name                = \"nsg-appgw-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Network security group for the container apps subnet.\nresource \"azurerm_network_security_group\" \"container_apps\" {\n  name                = \"nsg-ca-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Network security group for the database subnet.\nresource \"azurerm_network_security_group\" \"database\" {\n  name                = \"nsg-db-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Network security group for the cache subnet.\nresource \"azurerm_network_security_group\" \"cache\" {\n  name                = \"nsg-cache-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Application Gateway subnet.\nresource \"azurerm_subnet\" \"appgw\" {\n  name                 = \"snet-appgw\"\n  resource_group_name  = azurerm_resource_group.main.name\n  virtual_network_name = azurerm_virtual_network.main.name\n  address_prefixes     = [var.subnet_prefixes.appgw]\n}\n\n# Container Apps infrastructure subnet.\nresource \"azurerm_subnet\" \"container_apps\" {\n  name                 = \"snet-container-apps\"\n  resource_group_name  = azurerm_resource_group.main.name\n  virtual_network_name = azurerm_virtual_network.main.name\n  address_prefixes     = [var.subnet_prefixes.container_apps]\n\n  delegation {\n    name = \"containerapps-delegation\"\n\n    service_delegation {\n      name = \"Microsoft.App/environments\"\n      actions = [\n        \"Microsoft.Network/virtualNetworks/subnets/join/action\"\n      ]\n    }\n  }\n}\n\n# Private endpoints subnet.\nresource \"azurerm_subnet\" \"private_endpoints\" {\n  name                 = \"snet-private-endpoints\"\n  resource_group_name  = azurerm_resource_group.main.name\n  virtual_network_name = azurerm_virtual_network.main.name\n  address_prefixes     = [var.subnet_prefixes.private_endpoints]\n\n  private_endpoint_network_policies_enabled = false\n}\n\n# PostgreSQL delegated subnet.\nresource \"azurerm_subnet\" \"database\" {\n  name                 = \"snet-database\"\n  resource_group_name  = azurerm_resource_group.main.name\n  virtual_network_name = azurerm_virtual_network.main.name\n  address_prefixes     = [var.subnet_prefixes.database]\n\n  delegation {\n    name = \"postgres-flex-delegation\"\n\n    service_delegation {\n      name = \"Microsoft.DBforPostgreSQL/flexibleServers\"\n      actions = [\n        \"Microsoft.Network/virtualNetworks/subnets/join/action\"\n      ]\n    }\n  }\n}\n\n# Redis subnet.\nresource \"azurerm_subnet\" \"cache\" {\n  name                 = \"snet-cache\"\n  resource_group_name  = azurerm_resource_group.main.name\n  virtual_network_name = azurerm_virtual_network.main.name\n  address_prefixes     = [var.subnet_prefixes.cache]\n}\n\n# Associate NSG to Application Gateway subnet.\nresource \"azurerm_subnet_network_security_group_association\" \"appgw\" {\n  subnet_id                 = azurerm_subnet.appgw.id\n  network_security_group_id = azurerm_network_security_group.appgw.id\n}\n\n# Associate NSG to Container Apps subnet.\nresource \"azurerm_subnet_network_security_group_association\" \"container_apps\" {\n  subnet_id                 = azurerm_subnet.container_apps.id\n  network_security_group_id = azurerm_network_security_group.container_apps.id\n}\n\n# Associate NSG to database subnet.\nresource \"azurerm_subnet_network_security_group_association\" \"database\" {\n  subnet_id                 = azurerm_subnet.database.id\n  network_security_group_id = azurerm_network_security_group.database.id\n}\n\n# Associate NSG to cache subnet.\nresource \"azurerm_subnet_network_security_group_association\" \"cache\" {\n  subnet_id                 = azurerm_subnet.cache.id\n  network_security_group_id = azurerm_network_security_group.cache.id\n}\n\n# Public IP for Application Gateway ingress.\nresource \"azurerm_public_ip\" \"appgw\" {\n  name                = \"pip-appgw-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  allocation_method   = \"Static\"\n  sku                 = \"Standard\"\n  tags                = local.common_tags\n}\n\n# Key Vault for migrated secrets.\nresource \"azurerm_key_vault\" \"main\" {\n  name                       = substr(\"kv-${var.environment}-${var.location}-${local.name_prefix}\", 0, 24)\n  location                   = azurerm_resource_group.main.location\n  resource_group_name        = azurerm_resource_group.main.name\n  tenant_id                  = data.azurerm_client_config.current.tenant_id\n  sku_name                   = var.key_vault_sku_name\n  purge_protection_enabled   = false\n  soft_delete_retention_days = 7\n  tags                       = local.common_tags\n}\n\n# Access policy for the current deployment identity.\nresource \"azurerm_key_vault_access_policy\" \"current\" {\n  key_vault_id = azurerm_key_vault.main.id\n  tenant_id    = data.azurerm_client_config.current.tenant_id\n  object_id    = data.azurerm_client_config.current.object_id\n\n  secret_permissions = [\n    \"Get\",\n    \"List\",\n    \"Set\",\n    \"Delete\",\n    \"Purge\",\n    \"Recover\"\n  ]\n}\n\n# Random password for PostgreSQL admin.\nresource \"random_password\" \"db_admin\" {\n  length           = 24\n  special          = true\n  override_special = \"!@#%^*-_\"\n}\n\n# Store PostgreSQL admin password in Key Vault.\nresource \"azurerm_key_vault_secret\" \"db_admin_password\" {\n  name         = \"postgres-admin-password\"\n  value        = random_password.db_admin.result\n  key_vault_id = azurerm_key_vault.main.id\n\n  depends_on = [azurerm_key_vault_access_policy.current]\n}\n\n# Private DNS zone for PostgreSQL Flexible Server.\nresource \"azurerm_private_dns_zone\" \"postgres\" {\n  name                = \"${var.environment}.postgres.database.azure.com\"\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Link PostgreSQL private DNS zone to the spoke VNet.\nresource \"azurerm_private_dns_zone_virtual_network_link\" \"postgres\" {\n  name                  = \"postgres-link-${var.environment}\"\n  private_dns_zone_name = azurerm_private_dns_zone.postgres.name\n  resource_group_name   = azurerm_resource_group.main.name\n  virtual_network_id    = azurerm_virtual_network.main.id\n  tags                  = local.common_tags\n}\n\n# PostgreSQL Flexible Server replacing RDS PostgreSQL.\nresource \"azurerm_postgresql_flexible_server\" \"main\" {\n  name                   = \"psql-${var.environment}-${local.name_prefix}\"\n  resource_group_name    = azurerm_resource_group.main.name\n  location               = azurerm_resource_group.main.location\n  version                = var.postgresql_version\n  delegated_subnet_id    = azurerm_subnet.database.id\n  private_dns_zone_id    = azurerm_private_dns_zone.postgres.id\n  administrator_login    = var.db_admin_username\n  administrator_password = random_password.db_admin.result\n  zone                   = \"1\"\n  storage_mb             = var.db_storage_mb\n  sku_name               = var.db_sku_name\n  backup_retention_days  = var.db_backup_retention_days\n  tags                   = local.common_tags\n\n  depends_on = [azurerm_private_dns_zone_virtual_network_link.postgres]\n}\n\n# Azure Cache for Redis replacing ElastiCache Redis.\nresource \"azurerm_redis_cache\" \"main\" {\n  name                = \"redis-${var.environment}-${local.name_prefix}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  capacity            = var.redis_capacity\n  family              = var.redis_family\n  sku_name            = var.redis_sku_name\n  minimum_tls_version = \"1.2\"\n  non_ssl_port_enabled = false\n  tags                = local.common_tags\n}\n\n# Storage account replacing S3 for static assets.\nresource \"azurerm_storage_account\" \"main\" {\n  name                            = local.storage_account_name\n  resource_group_name             = azurerm_resource_group.main.name\n  location                        = azurerm_resource_group.main.location\n  account_tier                    = var.storage_account_tier\n  account_replication_type        = var.storage_account_replication_type\n  min_tls_version                 = \"TLS1_2\"\n  allow_nested_items_to_be_public = false\n  tags                            = local.common_tags\n}\n\n# Blob containers for static assets.\nresource \"azurerm_storage_container\" \"containers\" {\n  for_each              = toset(var.storage_containers)\n  name                  = each.value\n  storage_account_name  = azurerm_storage_account.main.name\n  container_access_type = \"private\"\n}\n\n# Managed environment for Container Apps replacing ECS Fargate cluster/services.\nresource \"azurerm_container_app_environment\" \"main\" {\n  name                       = \"cae-${var.environment}-${var.location}\"\n  location                   = azurerm_resource_group.main.location\n  resource_group_name        = azurerm_resource_group.main.name\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id\n  infrastructure_subnet_id   = azurerm_subnet.container_apps.id\n  tags                       = local.common_tags\n}\n\n# User-assigned managed identity for application access to Azure services.\nresource \"azurerm_user_assigned_identity\" \"container_apps\" {\n  name                = \"id-ca-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n}\n\n# Grant Container Apps identity read access to Key Vault secrets.\nresource \"azurerm_key_vault_access_policy\" \"container_apps\" {\n  key_vault_id = azurerm_key_vault.main.id\n  tenant_id    = data.azurerm_client_config.current.tenant_id\n  object_id    = azurerm_user_assigned_identity.container_apps.principal_id\n\n  secret_permissions = [\n    \"Get\",\n    \"List\"\n  ]\n}\n\n# Container Apps representing ECS Fargate services.\nresource \"azurerm_container_app\" \"apps\" {\n  for_each                     = var.container_apps\n  name                         = \"ca-${each.key}-${var.environment}\"\n  container_app_environment_id = azurerm_container_app_environment.main.id\n  resource_group_name          = azurerm_resource_group.main.name\n  revision_mode                = \"Single\"\n  tags                         = local.common_tags\n\n  identity {\n    type         = \"UserAssigned\"\n    identity_ids = [azurerm_user_assigned_identity.container_apps.id]\n  }\n\n  ingress {\n    external_enabled = each.value.external_ingress\n    target_port      = each.value.target_port\n    transport        = \"auto\"\n\n    traffic_weight {\n      latest_revision = true\n      percentage      = 100\n    }\n  }\n\n  template {\n    min_replicas = each.value.min_replicas\n    max_replicas = each.value.max_replicas\n\n    container {\n      name   = each.key\n      image  = each.value.image\n      cpu    = each.value.cpu\n      memory = each.value.memory\n\n      env {\n        name  = \"POSTGRES_HOST\"\n        value = azurerm_postgresql_flexible_server.main.fqdn\n      }\n\n      env {\n        name  = \"POSTGRES_USER\"\n        value = \"${var.db_admin_username}\"\n      }\n\n      env {\n        name        = \"POSTGRES_PASSWORD\"\n        secret_name = \"postgres-admin-password\"\n      }\n\n      env {\n        name  = \"REDIS_HOST\"\n        value = azurerm_redis_cache.main.hostname\n      }\n\n      env {\n        name  = \"STORAGE_ACCOUNT_NAME\"\n        value = azurerm_storage_account.main.name\n      }\n    }\n  }\n\n  secret {\n    name  = \"postgres-admin-password\"\n    value = random_password.db_admin.result\n  }\n\n  depends_on = [azurerm_key_vault_access_policy.container_apps]\n}\n\n# Application Gateway replacing AWS ALB.\nresource \"azurerm_application_gateway\" \"main\" {\n  name                = \"agw-${var.environment}-${var.location}\"\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  tags                = local.common_tags\n\n  sku {\n    name     = var.application_gateway_sku_name\n    tier     = var.application_gateway_sku_tier\n    capacity = var.application_gateway_capacity\n  }\n\n  gateway_ip_configuration {\n    name      = \"appgw-ip-config\"\n    subnet_id = azurerm_subnet.appgw.id\n  }\n\n  frontend_port {\n    name = \"frontend-port\"\n    port = var.application_gateway_frontend_port\n  }\n\n  frontend_ip_configuration {\n    name                 = \"frontend-ip\"\n    public_ip_address_id = azurerm_public_ip.appgw.id\n  }\n\n  backend_address_pool {\n    name  = \"backend-pool\"\n    fqdns = [azurerm_container_app.apps[local.first_container_app].latest_revision_fqdn]\n  }\n\n  backend_http_settings {\n    name                                = \"backend-http-settings\"\n    cookie_based_affinity               = \"Disabled\"\n    port                                = 80\n    protocol                            = \"Http\"\n    request_timeout                     = 30\n    pick_host_name_from_backend_address = true\n  }\n\n  http_listener {\n    name                           = \"http-listener\"\n    frontend_ip_configuration_name = \"frontend-ip\"\n    frontend_port_name             = \"frontend-port\"\n    protocol                       = \"Http\"\n  }\n\n  request_routing_rule {\n    name                       = \"routing-rule\"\n    rule_type                  = \"Basic\"\n    http_listener_name         = \"http-listener\"\n    backend_address_pool_name  = \"backend-pool\"\n    backend_http_settings_name = \"backend-http-settings\"\n    priority                   = 100\n  }\n\n  depends_on = [azurerm_container_app.apps]\n}\n\n# Diagnostic settings for Application Gateway to Log Analytics.\nresource \"azurerm_monitor_diagnostic_setting\" \"appgw\" {\n  name                       = \"diag-appgw\"\n  target_resource_id         = azurerm_application_gateway.main.id\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id\n\n  enabled_log {\n    category = \"ApplicationGatewayAccessLog\"\n  }\n\n  enabled_log {\n    category = \"ApplicationGatewayPerformanceLog\"\n  }\n\n  enabled_log {\n    category = \"ApplicationGatewayFirewallLog\"\n  }\n\n  metric {\n    category = \"AllMetrics\"\n    enabled  = true\n  }\n}\n\n# Diagnostic settings for PostgreSQL to Log Analytics.\nresource \"azurerm_monitor_diagnostic_setting\" \"postgres\" {\n  name                       = \"diag-postgres\"\n  target_resource_id         = azurerm_postgresql_flexible_server.main.id\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id\n\n  enabled_log {\n    category = \"PostgreSQLLogs\"\n  }\n\n  metric {\n    category = \"AllMetrics\"\n    enabled  = true\n  }\n}\n\n# Diagnostic settings for Key Vault to Log Analytics.\nresource \"azurerm_monitor_diagnostic_setting\" \"key_vault\" {\n  name                       = \"diag-kv\"\n  target_resource_id         = azurerm_key_vault.main.id\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id\n\n  enabled_log {\n    category = \"AuditEvent\"\n  }\n\n  metric {\n    category = \"AllMetrics\"\n    enabled  = true\n  }\n}\n\n# Diagnostic settings for Storage Account to Log Analytics.\nresource \"azurerm_monitor_diagnostic_setting\" \"storage\" {\n  name                       = \"diag-storage\"\n  target_resource_id         = \"${azurerm_storage_account.main.id}/blobServices/default\"\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id\n\n  enabled_log {\n    category = \"StorageRead\"\n  }\n\n  enabled_log {\n    category = \"StorageWrite\"\n  }\n\n  enabled_log {\n    category = \"StorageDelete\"\n  }\n\n  metric {\n    category = \"Transaction\"\n    enabled  = true\n  }\n}\n",
+      "description": "Core Azure resources implementing the AWS-to-Azure migration target architecture."
+    },
+    {
+      "filename": "outputs.tf",
+      "content": "output \"resource_group_name\" {\n  description = \"Resource group name.\"\n  value       = azurerm_resource_group.main.name\n}\n\noutput \"vnet_id\" {\n  description = \"Virtual network ID.\"\n  value       = azurerm_virtual_network.main.id\n}\n\noutput \"application_gateway_public_ip\" {\n  description = \"Public IP address of the Application Gateway.\"\n  value       = azurerm_public_ip.appgw.ip_address\n}\n\noutput \"application_gateway_frontend_fqdn\" {\n  description = \"Frontend FQDN if DNS label is later assigned to the public IP.\"\n  value       = azurerm_public_ip.appgw.fqdn\n}\n\noutput \"container_app_fqdns\" {\n  description = \"FQDNs of deployed Container Apps.\"\n  value       = { for k, v in azurerm_container_app.apps : k => v.latest_revision_fqdn }\n}\n\noutput \"postgresql_fqdn\" {\n  description = \"PostgreSQL Flexible Server FQDN.\"\n  value       = azurerm_postgresql_flexible_server.main.fqdn\n}\n\noutput \"redis_hostname\" {\n  description = \"Azure Cache for Redis hostname.\"\n  value       = azurerm_redis_cache.main.hostname\n}\n\noutput \"storage_account_name\" {\n  description = \"Storage account name for static assets.\"\n  value       = azurerm_storage_account.main.name\n}\n\noutput \"storage_primary_blob_endpoint\" {\n  description = \"Primary blob endpoint.\"\n  value       = azurerm_storage_account.main.primary_blob_endpoint\n}\n\noutput \"key_vault_name\" {\n  description = \"Key Vault name.\"\n  value       = azurerm_key_vault.main.name\n}\n\noutput \"db_admin_password_secret_id\" {\n  description = \"Key Vault secret ID containing the PostgreSQL admin password.\"\n  value       = azurerm_key_vault_secret.db_admin_password.id\n  sensitive   = true\n}\n",
+      "description": "Useful outputs for ingress, application endpoints, database, cache, storage, and secrets."
+    },
+    {
+      "filename": "README.md",
+      "content": "This Terraform module deploys an Azure target platform for migrating AWS ALB, ECS Fargate, RDS PostgreSQL, S3, ElastiCache Redis, Secrets Manager, and CloudWatch.\nIt creates a resource group, spoke VNet/subnets, Application Gateway, Container Apps environment/apps, PostgreSQL Flexible Server, Redis, Storage Account, Key Vault, and Log Analytics diagnostics.\nPrerequisite: install Terraform and Azure CLI, then authenticate with `az login` and select the correct subscription.\nReview and customize variables in `variables.tf` or a `.tfvars` file, especially container images, CIDRs, database sizing, and ingress settings.\nRun: `terraform init`\nRun: `terraform plan -out tfplan`\nRun: `terraform apply tfplan`\nAfter deployment, migrate PostgreSQL data, sync S3 assets to Blob Storage, load required secrets into Key Vault, and update DNS/certificates for Application Gateway.\nFor production, confirm hub-spoke peering, private DNS integration, TLS listener configuration, and monitoring/alert requirements.\n",
+      "description": "Short usage guide for deploying and completing the migration."
+    }
+  ]
+}

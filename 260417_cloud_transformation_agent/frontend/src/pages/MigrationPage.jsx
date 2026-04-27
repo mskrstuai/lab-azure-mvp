@@ -43,7 +43,7 @@ function PlanResultView({ result, runId, showExecutionLog = false }) {
       )}
       {result?.final_output && (
         <details className="result-details" open>
-          <summary>Full plan (markdown)</summary>
+          <summary>전체 계획 (Markdown)</summary>
           <div className="result-summary markdown-body">
             {result.final_output.split("\n").map((line, i) => (
               <p key={i}>{line || "\u00A0"}</p>
@@ -53,7 +53,7 @@ function PlanResultView({ result, runId, showExecutionLog = false }) {
       )}
       {showExecutionLog && result?.execution_log && (
         <details className="result-details">
-          <summary>Execution log</summary>
+          <summary>실행 로그</summary>
           <pre className="log-pre">
             {Array.isArray(result.execution_log)
               ? result.execution_log.join("\n")
@@ -191,7 +191,7 @@ function TargetRegionPicker({ azureRegion, setAzureRegion, disabled }) {
           type="text"
           value={azureRegion}
           onChange={(e) => setAzureRegion(e.target.value)}
-          placeholder="Region id (e.g. qatarcentral)"
+          placeholder="Region ID (예: qatarcentral)"
           disabled={disabled}
           style={{
             minHeight: 34,
@@ -359,7 +359,7 @@ export function useAzureMapping(rows, azureRegion, sourceAwsRegion) {
           hardFail = e;
           pauseRequestedRef.current = true;
           abortAllInFlightMapping();
-          setError(e.message || "Mapping failed");
+          setError(e.message || "Mapping 실패");
           setPhase("paused");
         } finally {
           abortControllersRef.current = abortControllersRef.current.filter(
@@ -545,8 +545,8 @@ function ScopeSummaryTable({
       >
         <div className="icon">🔎</div>
         <p style={{ marginBottom: 12 }}>
-          No resources selected yet. Pick a scope on Discover &amp; Select
-          first.
+          아직 선택된 리소스가 없습니다. 먼저 Discover &amp; Select에서 범위를
+          골라 주세요.
         </p>
         {onGoToDiscover && (
           <button
@@ -576,7 +576,7 @@ function ScopeSummaryTable({
         <div
           style={{ color: "var(--color-text-light)", fontSize: "0.82rem" }}
         >
-          Scope:{" "}
+          Region:{" "}
           {meta?.region && (
             <strong style={{ color: "var(--color-text)" }}>
               {meta.region}
@@ -590,9 +590,9 @@ function ScopeSummaryTable({
               </strong>
             </>
           )}
-          {" — "}
-          <strong style={{ color: "var(--color-text)" }}>{rows.length}</strong>{" "}
-          resource(s)
+          {" — "} Resources: {" "}
+          <strong style={{ color: "var(--color-text)" }}>{rows.length}</strong>
+          {" "} items
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <TargetRegionPicker
@@ -607,14 +607,14 @@ function ScopeSummaryTable({
                 color: "var(--color-text-light)",
                 fontVariantNumeric: "tabular-nums",
               }}
-              title="Mapping progress"
+              title="Mapping 진행 상황"
             >
               {mappingProgress.done}/{mappingProgress.total}
               {mappingLoading &&
                 mappingInFlightIndices?.size > 0 &&
-                ` · ${mappingInFlightIndices.size} in flight (≤${mappingConcurrency})`}
+                ` · 동시 ${mappingInFlightIndices.size}건 (≤${mappingConcurrency})`}
               {mappingLoading && (
-                <span style={{ marginLeft: 8 }} title="Elapsed (current item)">
+                <span style={{ marginLeft: 8 }} title="경과 시간(초)">
                   {elapsed}s
                 </span>
               )}
@@ -628,8 +628,8 @@ function ScopeSummaryTable({
             style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
             title={
               mappingComplete
-                ? "All resources in scope are mapped"
-                : "Map resources one by one (pause/resume supported)"
+                ? "범위 내 리소스 Mapping이 모두 완료되었습니다"
+                : "리소스별 Mapping 실행(일시 중지·재개 가능)"
             }
           >
             {mappingLoading ? (
@@ -651,7 +651,7 @@ function ScopeSummaryTable({
               className="tab action-btn action-btn--secondary"
               onClick={pauseMapping}
               style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
-              title="Pause after the current item finishes aborting"
+              title="현재 항목 처리가 끝나면 일시 중지합니다"
             >
               ⏸ Pause
             </button>
@@ -662,7 +662,7 @@ function ScopeSummaryTable({
               className="tab action-btn action-btn--secondary"
               onClick={() => remapMapping()}
               style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
-              title="Clear mappings and run again from the first resource"
+              title="Mapping을 초기화하고 첫 리소스부터 다시 실행합니다"
             >
               ↻ Re-map
             </button>
@@ -950,7 +950,7 @@ function PricingBlock({ mapping }) {
           flexWrap: "wrap",
         }}
       >
-        <span>Estimated monthly cost (PAYG)</span>
+        <span>월 예상 비용(PAYG)</span>
         {asOf && (
           <span
             style={{
@@ -962,7 +962,7 @@ function PricingBlock({ mapping }) {
             }}
             title={asOf}
           >
-            · as of {String(asOf).slice(0, 10)}
+            · 기준일 {String(asOf).slice(0, 10)}
           </span>
         )}
       </div>
@@ -1000,7 +1000,7 @@ function PricingBlock({ mapping }) {
               marginBottom: 4,
             }}
           >
-            Monthly delta
+            월 차액
           </div>
           <div
             style={{
@@ -1025,12 +1025,12 @@ function PricingBlock({ mapping }) {
             }}
           >
             {delta === null
-              ? "Needs both sides"
+              ? "양쪽 가격이 모두 필요합니다"
               : delta > 0
-                ? "Azure costs more"
+                ? "Azure 비용이 더 큼"
                 : delta < 0
-                  ? "Azure saves"
-                  : "Break-even"}
+                  ? "Azure가 더 저렴"
+                  : "동일"}
           </div>
         </div>
       </div>
@@ -1043,7 +1043,7 @@ function PricingBlock({ mapping }) {
             lineHeight: 1.4,
           }}
         >
-          {assumptions.length > 0 && <div>Assumptions · {assumptions.join(" | ")}</div>}
+          {assumptions.length > 0 && <div>가정 · {assumptions.join(" | ")}</div>}
           <div>
             Source ·{" "}
             {aws?.source && <code>{aws.source}</code>}
@@ -1112,7 +1112,7 @@ function MappingDetail({ mapping }) {
             marginBottom: 4,
           }}
         >
-          Why
+          선정 근거
         </div>
         <div
           style={{
@@ -1123,7 +1123,7 @@ function MappingDetail({ mapping }) {
         >
           {mapping.rationale || (
             <em style={{ color: "var(--color-text-light)" }}>
-              No rationale provided.
+              근거 텍스트가 없습니다.
             </em>
           )}
         </div>
@@ -1164,10 +1164,9 @@ function MigrationPage({
     <section className="page-section">
       <h2 className="page-title">🧭 Plan</h2>
       <p className="page-desc">
-        Review the scope you picked on Discover &amp; Select, pick a target
-        Azure region, and submit. The agent returns a structured migration
-        plan <em>and</em> a ready-to-deploy Azure Terraform module, saved
-        under <code>backend/outputs/</code>.
+        Discover &amp; Select에서 고른 범위와 Target region을 확인한 뒤 제출하세요. 에이전트가
+        구조화된 마이그레이션 계획과 바로 쓸 수 있는 Azure Terraform 모듈을 함께 반환하며,
+        결과는 <code>backend/outputs/</code>에 저장됩니다.
       </p>
 
       <RunMigrationForm
@@ -1198,7 +1197,6 @@ function RunMigrationForm({
   onGoToDiscover,
   mapping,
 }) {
-  const [outputFormat, setOutputFormat] = useState("json");
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
@@ -1213,7 +1211,7 @@ function RunMigrationForm({
           setTimeout(pollStatus, 2000);
         }
       })
-      .catch(() => setError("Failed to poll status"));
+      .catch(() => setError("상태 갱신에 실패했습니다"));
   }, [jobId]);
 
   useEffect(() => {
@@ -1246,7 +1244,7 @@ function RunMigrationForm({
     if (hasScope) {
       try {
         if (!mapping.mappingComplete) {
-          setPrepMessage("Mapping resources to Azure targets…");
+          setPrepMessage("리소스를 Azure 대상으로 Mapping 하는 중…");
         }
         mappingsForPlanner = await mapping.ensure();
       } catch (e) {
@@ -1255,8 +1253,7 @@ function RunMigrationForm({
           return;
         }
         setError(
-          `Could not map resources to Azure before planning: ${e.message || e}. ` +
-            "You can retry mapping from the table above.",
+          `Plan 전에 리소스 Mapping에 실패했습니다: ${e.message || e}. 위 표에서 Mapping을 다시 시도해 주세요.`,
         );
         setPrepMessage(null);
         return;
@@ -1270,7 +1267,6 @@ function RunMigrationForm({
         aws_resource_spec: awsSpec.trim(),
         target_azure_region: azureRegion.trim() || "eastus",
         migration_goals: goals.trim(),
-        output_format: outputFormat,
         azure_mappings: mappingsForPlanner,
       });
       setJobId(res.job_id);
@@ -1298,21 +1294,8 @@ function RunMigrationForm({
             color: "var(--color-text-light)",
           }}
         >
-          Target region above applies to pricing/mapping and to the migration
-          plan output (same as <code>target_azure_region</code>).
+          위 내용은 사전 Azure Mapping 결과입니다. Plan 시 결과가 달라질 수 있습니다.
         </p>
-      </div>
-      <div className="form-row">
-        <div className="form-field">
-          <label>Output format</label>
-          <select
-            value={outputFormat}
-            onChange={(e) => setOutputFormat(e.target.value)}
-          >
-            <option value="json">Markdown + structured JSON</option>
-            <option value="plain_text">Plain narrative + JSON</option>
-          </select>
-        </div>
       </div>
 
       {error && <div className="form-error">{error}</div>}
@@ -1335,7 +1318,7 @@ function RunMigrationForm({
               {status?.status === "running" ? "Planning..." : "Starting..."}
             </>
           ) : (
-            <>🚀 Run migration plan</>
+            <>🚀 Plan</>
           )}
         </button>
         {prepMessage && !isRunning && (
@@ -1362,7 +1345,7 @@ function RunMigrationForm({
               fontSize: "0.82rem",
             }}
           >
-            Show raw spec sent to the planner
+            Planner에 보낸 원문 스펙 보기
           </summary>
           <pre
             style={{

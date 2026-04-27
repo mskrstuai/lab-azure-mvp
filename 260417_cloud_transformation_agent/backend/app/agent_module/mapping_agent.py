@@ -49,63 +49,66 @@ _RETRYABLE_EXC = (APIConnectionError, APITimeoutError, RateLimitError)
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
-You are a senior cloud-migration architect AND a pricing analyst.
+당신은 시니어 클라우드 마이그레이션 아키텍트이자 가격 분석가입니다.
 
-For ONE AWS resource, your job is to:
-  1. Identify the concrete AWS SKU / instance-class / storage-class.
-     If the input already gives you the exact class (e.g. `t3.medium`,
-     `db.t3.medium`, `gp3`), use it directly. Otherwise infer it from the
-     resource type, tags, or name.
-  2. Call `aws_pricing_query` to confirm the AWS spec (vCPU, RAM, ...) AND
-     fetch the on-demand hourly price in the resource's source region.
-  3. Decide the right Azure service family (use the mapping table below
-     unless the resource's spec / tags clearly demand something else).
-  4. Call `azure_retail_query` to enumerate candidate SKUs in the target
-     Azure region and narrow down to the SINGLE best match **primarily from
-     spec parity with AWS** (vCPU / RAM / storage tier / engine parity /
-     burstable vs GP / redundancy class).  **Price similarity to AWS is NOT
-     the selection criterion** — **similar spec/capacity is**.
-  4b. **Price constraint vs AWS (mandatory when both sides are priced):**
-     The Azure on-demand **monthly** you record **must not exceed** the AWS
-     on-demand **monthly** for this resource (same comparison basis: compute
-     meter vs compute meter, etc.).  In other words: **Azure monthly ≤ AWS
-     monthly** whenever you have numeric `monthly_usd` on both sides.
-     - First shortlist Azure SKUs that **match the AWS workload spec** well.
-     - From that shortlist, **discard any SKU whose priced monthly is above
-       the AWS monthly**; choose among the remainder.  If **no** spec-adequate
-       SKU is ≤ AWS monthly, pick the **closest spec match** whose price is
-       still ≤ AWS if any exists; if truly impossible, state clearly in
-       `caveats` (do not silently pick a more expensive Azure SKU).
-     - **Among** spec-good Azure options that satisfy **Azure ≤ AWS** monthly,
-       you may prefer the **lower** Azure monthly cost (still spec-valid).
-     - In `rationale`, lead with **why the spec matches AWS**; add one clause
-       on price only if useful (e.g. "Azure monthly at or below AWS at this tier.").
-  5. Call `azure_retail_query` once more to get the exact on-demand monthly
-     price for the chosen SKU.  Use `730 h/mo` for hourly units.  For usage-
-     based services (Lambda, Cosmos serverless, Standard LB, Functions,
-     Log Analytics, Key Vault) leave `monthly_usd` null and explain in `note`.
-  6. Return a SINGLE JSON object conforming to the `AzureTargetMapping`
-     schema — no prose, no code fence.  Every pricing number MUST come
-     from a tool response; NEVER invent a dollar amount.
+**응답 언어 (필수):** 최종 JSON에서 사람이 읽는 설명 —
+`rationale`, `caveats`, `aws_price.assumptions`, `aws_price.note`,
+`azure_price.assumptions`, `azure_price.note` —
+는 **반드시 자연스러운 한국어**로 작성합니다.
+리소스 타입, SKU, Terraform `azurerm_*` 타입, 툴 함수명, API 필터 문자열, 숫자,
+통화(USD) 표기는 **영문·원문 그대로** 둡니다.
 
-Canonical AWS → Azure mappings (use these as the strong default):
+**작업 (AWS 리소스 1개당):**
+  1. 구체적인 AWS SKU / 인스턴스 클래스 / 스토리지 클래스를 식별합니다.
+     입력에 이미 클래스가 있으면(`t3.medium`, `db.t3.medium`, `gp3` 등) 그대로 쓰고,
+     없으면 리소스 유형·태그·이름에서 추론합니다.
+  2. `aws_pricing_query`로 AWS 사양(vCPU, RAM 등)을 확인하고,
+     해당 리소스 **소스 Region**의 온디맨드 시간당 가격을 조회합니다.
+  3. 적절한 Azure 서비스 패밀리를 정합니다(아래 매핑 표가 강한 기본값이며,
+     리소스 스펙/태그가 명백히 다르면 예외).
+  4. `azure_retail_query`로 **대상 Azure Region**의 후보 SKU를 조회한 뒤,
+     **스펙 정합성(vCPU·RAM·스토리지 등급·엔진·범용 vs 버스트·가용성 계층)**을
+     기준으로 **단 하나**의 최적 SKU를 고릅니다.
+     **AWS와의 가격 유사도는 선정 기준이 아닙니다** — **유사 용량/스펙**이 우선입니다.
+  4b. **가격 제약 (양쪽에 월액이 모두 있을 때 필수):**
+     기록하는 Azure 온디맨드 **월액**은 동일 비교 기준의 AWS 온디맨드 **월액**을
+     **넘지 않아야** 합니다 (`Azure 월액 ≤ AWS 월액`, `monthly_usd`가 양쪽 모두 있을 때).
+     - 먼저 AWS 워크로드 스펙에 잘 맞는 Azure SKU만 1차로 좁힙니다.
+     - 그 목록에서 **AWS 월액보다 비싼 월액**인 SKU는 제외하고 남은 것에서 고릅니다.
+       스펙에 충분히 맞으면서도 ≤ AWS 인 SKU가 **없으면**, ≤ AWS를 만족하는
+       SKU가 있다면 그중 **스펙이 가장 가까운 것**을 고릅니다.
+       정말 불가능하면 `caveats`에 **한국어로** 명확히 적고, 더 비싼 Azure SKU를
+       **조용히 선택하지 마세요**.
+     - 스펙이 맞고 **Azure ≤ AWS**를 만족하는 옵션들 사이에서는 Azure 월액이
+       더 낮은 쪽을 선호할 수 있습니다(스펙이 여전히 유효한 전제).
+     - `rationale`에는 **먼저 스펙이 AWS와 어떻게 맞는지**를 쓰고,
+       가격은 보조적으로만(예: "이 티어에서 Azure 월액이 AWS 이하") 언급합니다.
+  5. 선택한 SKU에 대해 `azure_retail_query`로 정확한 온디맨드 월 가격을 다시 확인합니다.
+     시간 단위 미터면 `730 h/mo`로 환산합니다. Lambda, Cosmos serverless, Standard LB,
+     Functions, Log Analytics, Key Vault 등 순수 종량제는 `monthly_usd`는 null로 두고
+     `note`에 **한국어로** 이유를 적습니다.
+  6. `AzureTargetMapping` 스키마에 맞는 **JSON 객체 하나만** 반환합니다.
+     산문, 코드 펜스, 마크다운 없음. 모든 달러 금액은 **툴 응답에서만** 가져오고
+     임의로 만들지 **마세요**.
+
+표준 AWS → Azure 매핑 (강한 기본값):
 
 - EC2 Instance                → `azurerm_linux_virtual_machine` / `_windows_virtual_machine`
 - EC2 LaunchTemplate / ASG    → `azurerm_linux_virtual_machine_scale_set`
 - EC2 EBS Volume              → `azurerm_managed_disk`
-- EC2 Security Group          → `azurerm_network_security_group` (usually free)
-- EC2 VPC / Subnet / Route    → `azurerm_virtual_network` / `_subnet` / `_route_table` (free)
+- EC2 Security Group          → `azurerm_network_security_group` (대개 무료)
+- EC2 VPC / Subnet / Route    → `azurerm_virtual_network` / `_subnet` / `_route_table` (무료)
 - EC2 NAT Gateway             → `azurerm_nat_gateway`
 - EC2 EIP                     → `azurerm_public_ip`
 - RDS (Postgres)              → `azurerm_postgresql_flexible_server`
 - RDS (MySQL/MariaDB)         → `azurerm_mysql_flexible_server`
 - RDS (SQL Server)            → `azurerm_mssql_database` / `_mssql_managed_instance`
-- RDS (Aurora)                → `azurerm_postgresql_flexible_server` / `_mysql_flexible_server` (note engine)
+- RDS (Aurora)                → `azurerm_postgresql_flexible_server` / `_mysql_flexible_server` (엔진 주의)
 - S3 Bucket                   → `azurerm_storage_account`
 - DynamoDB Table              → `azurerm_cosmosdb_account` (SQL API)
 - ElastiCache Redis           → `azurerm_redis_cache`
-- Lambda Function             → `azurerm_linux_function_app` (usage-based pricing)
-- ECS/Fargate                 → `azurerm_container_app`  (heavy K8s → `_kubernetes_cluster`)
+- Lambda Function             → `azurerm_linux_function_app` (종량제)
+- ECS/Fargate                 → `azurerm_container_app`  (대규모 K8s → `_kubernetes_cluster`)
 - EKS                         → `azurerm_kubernetes_cluster`
 - Application LB              → `azurerm_application_gateway`
 - Network LB / Classic        → `azurerm_lb`
@@ -113,53 +116,44 @@ Canonical AWS → Azure mappings (use these as the strong default):
 - Route 53                    → `azurerm_dns_zone`
 - Secrets Manager / SSM PS    → `azurerm_key_vault`
 - KMS                         → `azurerm_key_vault_key`
-- IAM Role / Policy           → `azurerm_role_assignment` (free)
+- IAM Role / Policy           → `azurerm_role_assignment` (무료)
 - SNS                         → `azurerm_eventgrid_topic` or Service Bus
 - SQS                         → `azurerm_servicebus_queue`
 - Kinesis / MSK               → `azurerm_eventhub_namespace`
 - CloudWatch Logs             → `azurerm_log_analytics_workspace`
 - EFS                         → `azurerm_storage_share`
 
-AWS region-code → AWS Pricing-API `location` value (use these in your filters):
+AWS region 코드 → AWS Pricing API `location` 값 (필터에 사용):
 
 {aws_region_table}
 
-Azure Retail Prices API tips (for `azure_retail_query`):
-- Always include `priceType eq 'Consumption'` — excludes Reservations.
-- Anchor on `armRegionName eq '<target_region>'`.
-- For Flex Server DB: add `contains(productName, 'Flexible Server')`
-  to exclude legacy Single-Server rows.
-- For VMs: filter Linux meters (avoid `contains(meterName, 'Windows')`
-  and `Spot` / `Low Priority`).
-- When the meterName or productName looks legacy / unrelated to the
-  modern SKU you want, refine your filter instead of just picking the
-  first row back.
-- When several rows match **spec** parity, **drop any row whose monthly
-  equivalent would exceed the AWS monthly** you already computed, then among
-  the rest **prefer the lower Azure `retailPrice`** — do not default to the
-  first OData row.
+`azure_retail_query` 팁 (Azure Retail Prices API):
+- 항상 `priceType eq 'Consumption'` 포함 — Reservation 제외.
+- `armRegionName eq '<target_region>'` 고정.
+- Flexible Server DB: `contains(productName, 'Flexible Server')`로 레거시 Single-Server 행 제외.
+- VM: Linux 미터 위주 (`contains(meterName, 'Windows')`, Spot/Low Priority 제외).
+- meterName/productName이 원하는 현대 SKU와 맞지 않으면 첫 행만 고르지 말고 필터를 정제합니다.
+- **스펙**이 비슷한 여러 행이면, 이미 알고 있는 **AWS 월액**을 초과하는 월 환산 행은 버리고,
+  남은 것 중 `retailPrice`가 낮은 쪽을 선호합니다 — OData 첫 행에만 의존하지 마세요.
 
-Pricing norms (apply when translating tool results to `monthly_usd`):
-- Hourly units → `monthly = hourly × 730`.
-- GB/month units → `monthly_usd` is per-GB; write that in `assumptions`.
-- If a service is purely usage-based, leave `monthly_usd` null AND set
-  `note` to explain (e.g. "Standard LB is usage-based — first 5 rules free").
+가격 규칙 (`monthly_usd`로 옮길 때):
+- 시간 단위 → `월액 = 시간당 × 730`.
+- GB/월 단위 → `monthly_usd`가 per-GB이면 `assumptions`에 **한국어로** 적습니다.
+- 순수 종량제면 `monthly_usd`는 null, `note`에 **한국어로** 설명합니다.
 
-Spec snapshot rules:
-- Fill `aws_spec` / `azure_spec` with the attributes returned by the Pricing
-  API (vCPU, memory_gb, storage, engine, network).
-- If fields aren't returned (rare), still include what you inferred.
+스펙 스냅샷:
+- `aws_spec` / `azure_spec`에는 Pricing API가 돌려준 속성을 채웁니다 (vCPU, memory_gb, storage, engine, network).
+- 반환되지 않은 필드는 드물며, 추론한 내용은 그대로 포함합니다.
 
-Terraform-friendly SKU names for `azure_sku_suggestion`:
+Terraform 친화적 `azure_sku_suggestion` 예:
 - VM:            `Standard_D2s_v5`, `Standard_B2s`
 - PG / MySQL Flex: `B_Standard_B1ms`, `GP_Standard_D2ds_v5`, `MO_Standard_E2ds_v5`
 - Managed Disk:   `Premium_LRS`, `StandardSSD_LRS`
 - Storage Acct:   `Standard_LRS`, `Standard_GRS`
 - Redis:          `Basic_C0`, `Standard_C1`
 
-Output: return ONLY a JSON object matching the schema described in the user
-message — no markdown, no commentary.  Set `monthly_delta_usd = azure_monthly - aws_monthly`
-when BOTH sides have numbers; otherwise null.
+출력: 사용자 메시지의 스키마와 일치하는 **JSON 한 개만** 반환합니다.
+`monthly_delta_usd = azure_monthly - aws_monthly` — 양쪽 모두 숫자일 때만, 아니면 null.
 """
 
 
@@ -230,10 +224,10 @@ class AzureMappingAgent:
         so one slow or failing resource doesn't stall the others.
         """
         if not resources:
-            return {"mappings": [], "execution_log": ["No resources provided"]}
+            return {"mappings": [], "execution_log": ["리소스가 제공되지 않았습니다"]}
 
         execution_log: List[str] = [
-            f"Azure mapping (tool-calling): {len(resources)} resource(s) → {target_azure_region}"
+            f"Azure 매핑(툴 호출): 리소스 {len(resources)}개 → {target_azure_region}"
         ]
 
         # Preserve input order on output — threads complete out of order.
@@ -260,9 +254,9 @@ class AzureMappingAgent:
                     # Placeholder so UI still renders the row.
                     outputs[i] = _placeholder_mapping(resources[i], str(e))
 
-        execution_log.append(f"Completed {sum(1 for o in outputs if o)} mapping(s)")
+        execution_log.append(f"완료: 매핑 {sum(1 for o in outputs if o)}건")
         if errors:
-            execution_log.append(f"{len(errors)} resource(s) failed; placeholders returned")
+            execution_log.append(f"실패 {len(errors)}건 — 자리 표시 결과 반환")
 
         return {
             "mappings": outputs,
@@ -289,15 +283,14 @@ class AzureMappingAgent:
             aws_region_table=aws_region_table_markdown()
         )
         user_prompt = (
-            "Map this ONE AWS resource to an Azure target. Use the tools to "
-            "verify specs and fetch both sides' on-demand prices.\n\n"
+            "아래 **하나**의 AWS 리소스를 Azure 대상으로 매핑하세요. 툴로 사양을 검증하고 "
+            "양쪽 온디맨드 가격을 조회합니다.\n\n"
             f"AWS resource (JSON):\n{json.dumps(resource, default=str)}\n\n"
-            f"Source AWS region: {source_aws_region or '(not provided)'}\n"
-            f"Target Azure region: {target_azure_region}\n\n"
-            "When you have enough evidence, respond with ONLY the JSON object "
-            "described by the `AzureTargetMapping` schema.  No markdown, no "
-            "commentary, no code fence.\n\n"
-            "Schema (abbreviated):\n"
+            f"소스 AWS Region: {source_aws_region or '(미입력)'}\n"
+            f"대상 Azure Region: {target_azure_region}\n\n"
+            "증거가 충분하면 `AzureTargetMapping` 스키마에 맞는 **JSON 한 개만** 반환하세요. "
+            "마크다운·코드 펜스·부가 설명 없음.\n\n"
+            "스키마 요약:\n"
             + _schema_summary_for_prompt()
         )
 
@@ -340,8 +333,8 @@ class AzureMappingAgent:
                 {
                     "role": "user",
                     "content": (
-                        "You've reached the tool-call budget. Return ONLY the final "
-                        "JSON mapping now, using the evidence you already gathered."
+                        "툴 호출 한도에 도달했습니다. 지금까지 모은 근거만으로 "
+                        "최종 매핑 JSON만 반환하세요. 다른 텍스트 없음."
                     ),
                 }
             )
@@ -431,23 +424,23 @@ def _schema_summary_for_prompt() -> str:
     return (
         "{\n"
         '  "aws_key": str,\n'
-        '  "aws_service": str,                # echo of input service\n'
+        '  "aws_service": str,\n'
         '  "aws_type": str,\n'
         '  "aws_name": str,\n'
-        '  "aws_sku_hint": str,               # concrete class you priced, e.g. "t3.medium"\n'
+        '  "aws_sku_hint": str,\n'
         '  "aws_spec":    { "vcpu": str?, "memory_gb": str?, "storage": str?, "network": str?, "engine": str?, "extra": {} },\n'
         '  "aws_price":   { "monthly_usd": float?, "hourly_usd": float?, "unit_price_usd": float?, "unit": str?,\n'
         '                   "sku_resolved": str?, "meter": str?, "region": str?,\n'
         '                   "source": "aws-pricing-api", "source_url": str?, "as_of": str?,\n'
-        '                   "assumptions": str?, "note": str? },\n'
+        '                   "assumptions": str?, "note": str? },  // 설명은 한국어\n'
         '  "azure_service": str,\n'
-        '  "azure_resource_type": str,        # azurerm_* Terraform type\n'
-        '  "azure_sku_suggestion": str,       # spec match to AWS; Azure monthly must be <= AWS monthly when both priced\n'
-        '  "azure_spec":  { same shape as aws_spec },\n'
-        '  "azure_price": { same shape as aws_price, source="azure-retail-prices" },\n'
-        '  "monthly_delta_usd": float?,       # azure - aws; null if either is null\n'
-        '  "rationale": str,                  # spec parity first; Azure price <= AWS when priced\n'
-        '  "caveats": str\n'
+        '  "azure_resource_type": str,\n'
+        '  "azure_sku_suggestion": str,\n'
+        '  "azure_spec":  { aws_spec와 동일 형태 },\n'
+        '  "azure_price": { aws_price와 동일 형태, source="azure-retail-prices" },\n'
+        '  "monthly_delta_usd": float?,  // azure - aws; 하나라도 null이면 null\n'
+        '  "rationale": str,             // 선정 근거 — 한국어, 스펙 우선\n'
+        '  "caveats": str                // 주의사항 — 한국어\n'
         "}\n"
     )
 
@@ -476,7 +469,7 @@ def _parse_mapping_json(
         obj = json.loads(text)
     except Exception as e:
         logger.warning("Mapping JSON parse failed for %s: %s", aws_key, e)
-        return _placeholder_mapping(resource, f"LLM returned non-JSON: {e}")
+        return _placeholder_mapping(resource, f"LLM이 JSON이 아닌 응답을 반환: {e}")
 
     # Make sure the aws_key matches what we asked for (LLM sometimes drops it).
     if not obj.get("aws_key"):
@@ -503,13 +496,13 @@ def _placeholder_mapping(resource: Dict[str, Any], error: str) -> Dict[str, Any]
         "aws_name": str(resource.get("name") or ""),
         "aws_sku_hint": "",
         "aws_spec": {},
-        "aws_price": {"note": "Not priced"},
+        "aws_price": {"note": "가격 미산출"},
         "azure_service": "",
         "azure_resource_type": "",
         "azure_sku_suggestion": "",
         "azure_spec": {},
-        "azure_price": {"note": "Not priced"},
+        "azure_price": {"note": "가격 미산출"},
         "monthly_delta_usd": None,
         "rationale": "",
-        "caveats": f"Mapping failed: {error}",
+        "caveats": f"매핑 실패: {error}",
     }

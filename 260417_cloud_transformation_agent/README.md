@@ -73,7 +73,30 @@ export AWS_SESSION_TOKEN=...
 - 서비스별 `describe_*` / `list_*` (이미 사용 중이던 권한과 동일)
 - `resource-groups:ListGroups`, `resource-groups:ListGroupResources`
 
+## Deploy & Migrate (Terraform 직접 적용)
+
+**Plan** 단계에서 생성된 Terraform 모듈은 **🚀 Deploy & Migrate** 탭에서 zip 다운로드 없이 바로 Azure에 적용할 수 있습니다.
+
+1. 백엔드 호스트(=uvicorn 가 도는 곳)에 `terraform`(>= 1.5)과 `az`(Azure CLI)가 설치되어 있어야 합니다. 설치 여부는 화면 상단 **Preflight** 타일에서 확인됩니다.
+2. 같은 호스트에서 `az login` 으로 한 번 로그인하면 Azure CLI에 보이는 모든 구독이 드롭다운에 자동으로 채워집니다.
+3. 구독을 선택하고 **🚀 Deploy to Azure** 를 누르면 백엔드가 다음을 순차로 실행하고 로그를 실시간 스트리밍합니다.
+   - `terraform init -input=false`
+   - `terraform plan -input=false -out=tfplan`
+   - `terraform apply -input=false -auto-approve tfplan`
+4. 작업 작업 디렉토리는 `backend/.deployments/<run_id>/` 에 유지되므로 동일한 모듈에 대해 **💥 Destroy** 버튼으로 `terraform destroy` 도 같은 페이지에서 실행할 수 있습니다.
+
+`ARM_SUBSCRIPTION_ID` 는 선택한 구독으로 자동 주입되며, `azurerm` provider는 백엔드 호스트의 Azure CLI 자격증명을 그대로 사용합니다. 별도의 서비스 프린시펄 설정은 필요하지 않습니다.
+
+여전히 zip 으로 받아 로컬에서 직접 돌리고 싶다면 Deploy 패널의 _“Prefer to run terraform yourself?”_ 토글에서 다운로드 링크가 제공됩니다.
+
+추가 엔드포인트:
+
+- `GET /api/migration/deploy/preflight` — terraform / az 설치 + 구독 목록
+- `POST /api/migration/outputs/{run_id}/deploy` — body: `{ "action": "apply"|"destroy", "subscription_id": "..." }`
+- `GET /api/migration/deploy/{deploy_id}?since=<n>` — 상태 + 증분 로그(폴링용)
+
 ## Notes
 
 - 이 도구는 **계획·설계 보조**이며, 실제 이전·비용·규정 준수는 별도 검증이 필요합니다.
 - AWS resources 탭은 읽기 전용(`describe_*` / `list_*`)만 호출합니다. 쓰기 API는 사용하지 않습니다.
+- Deploy 탭의 `terraform apply` 는 **백엔드 프로세스 권한**으로 실행되므로, 운영 환경에서는 별도의 RBAC/네트워크 격리를 적용하거나 배포를 별도 워커로 옮기는 것이 안전합니다.

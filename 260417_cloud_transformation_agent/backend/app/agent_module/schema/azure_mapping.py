@@ -97,15 +97,15 @@ class PriceInfo(BaseModel):
     assumptions: str | None = Field(
         default=None,
         description=(
-            "One sentence describing the pricing assumption (e.g. 'Linux on-demand "
-            "× 730 h', 'Blob Hot per-GB/mo, transactions excluded')."
+            "One sentence describing the pricing assumption — **write in Korean**. "
+            "Example meaning: Linux on-demand × 730 h, Blob Hot per-GB/mo excluding transactions."
         ),
     )
     note: str | None = Field(
         default=None,
         description=(
-            "Anything worth flagging: 'usage-based — no fixed monthly', "
-            "'requested t3.medium unavailable, used t3a.medium', etc."
+            "Flags worth calling out — **write in Korean** (e.g. usage-based no fixed monthly, "
+            "or substitute SKU if requested class unavailable)."
         ),
     )
 
@@ -187,16 +187,16 @@ class AzureTargetMapping(BaseModel):
 
     rationale: str = Field(
         description=(
-            "One sentence (≤ 40 words): **why the Azure target matches AWS on "
-            "spec** (capacity/engine/tier). Mention price only briefly if "
-            "helpful (e.g. Azure at or below AWS monthly)."
+            "One sentence (≤ 40 words), **in Korean**: **why the Azure target matches AWS on "
+            "spec** (capacity/engine/tier). Mention price only briefly if helpful "
+            "(e.g. Azure monthly at or below AWS)."
         )
     )
     caveats: str = Field(
         default="",
         description=(
-            "Optional ≤ 1 sentence on gaps: engine-version mismatch, "
-            "HA trade-offs, data-migration hazards, etc."
+            "Optional ≤ 1 sentence, **in Korean**: gaps such as engine-version mismatch, "
+            "HA trade-offs, data-migration risks, etc."
         ),
     )
 

@@ -15,10 +15,10 @@ const TABS = [
 const DEFAULT_AWS_SPEC = `Region: us-east-1
 Services: Application Load Balancer, ECS Fargate services, RDS PostgreSQL, S3 buckets for static assets, ElastiCache Redis, Secrets Manager, CloudWatch.
 
-Example ARNs or names can be listed here; the planner will reason at service level if IDs are redacted.`;
+ARN·이름 예시를 여기 나열할 수 있습니다. ID가 가려져 있으면 플래너는 서비스 수준에서 추론합니다.`;
 
 const DEFAULT_GOALS =
-  "Minimize downtime; align with hub-spoke networking; use managed services where possible.";
+  "가동 중단 시간 최소화; hub-spoke 네트워킹에 맞춤; 가능한 한 managed service 사용.";
 
 function App() {
   const [activeTab, setActiveTab] = useState("home");
@@ -60,10 +60,12 @@ function App() {
           <span className="sidebar-brand-icon" aria-hidden="true">☁️</span>
           <div>
             <div className="sidebar-title-h1">Cloud Transformation</div>
-            <div className="sidebar-subtitle">AWS → Azure, powered by Azure OpenAI</div>
+            <div className="sidebar-subtitle">
+              AWS → Azure, Azure OpenAI 기반 마이그레이션 플래너
+            </div>
           </div>
         </div>
-        <nav className="sidebar-nav" aria-label="Primary">
+        <nav className="sidebar-nav" aria-label="주요 메뉴">
           {TABS.map(({ key, label, icon }) => (
             <button
               key={key}

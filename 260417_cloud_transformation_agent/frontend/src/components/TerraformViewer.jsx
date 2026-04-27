@@ -176,7 +176,7 @@ function TerraformViewer({ files, runId, compact = false }) {
       {!compact && (
         <details style={{ marginTop: 12 }}>
           <summary style={{ cursor: "pointer", fontSize: "0.85rem" }}>
-            ▸ How to deploy
+            ▸ 배포 방법 (CLI)
           </summary>
           <pre
             style={{
