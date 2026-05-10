@@ -121,6 +121,31 @@ def _trim_azure_item(it: Dict[str, Any]) -> Dict[str, Any]:
     return {k: it.get(k) for k in _AZURE_ITEM_FIELDS if it.get(k) not in (None, "")}
 
 
+def _simplify_retail_filter(filter_expr: str) -> Optional[str]:
+    """Drop optional clauses progressively for 400 retry.
+
+    Azure Retail Prices rejects overly complex filters with HTTP 400.  We
+    progressively drop the most expendable clauses so the LLM still gets
+    useful data back, and we let it post-filter client-side.
+
+    Strategy (most expendable first):
+      1. ``not contains(...)`` — exclusion clauses, can be applied client-side.
+      2. ``contains(...)``     — narrowing clauses, equality is usually enough.
+
+    Returns the simplified expression, or None if it can't be simplified.
+    """
+    import re as _re
+    # 1. Strip "and not contains(...)"
+    new_expr = _re.sub(r"\s+and\s+not\s+contains\([^)]+\)", "", filter_expr, flags=_re.IGNORECASE)
+    if new_expr != filter_expr:
+        return new_expr
+    # 2. Strip "and contains(...)"
+    new_expr = _re.sub(r"\s+and\s+contains\([^)]+\)", "", filter_expr, flags=_re.IGNORECASE)
+    if new_expr != filter_expr:
+        return new_expr
+    return None
+
+
 def azure_retail_query(
     filter_expr: str,
     *,
@@ -132,46 +157,93 @@ def azure_retail_query(
     Follows ``NextPageLink`` up to ``max_items`` rows so the LLM can see the
     full relevant slice even if the API wants to paginate (Virtual Machines
     in a region easily exceeds 100).
+
+    On HTTP 400 (typically from filter complexity — Retail Prices rejects
+    7+ conjuncts like ``armSkuName eq + contains + not contains x N``), we
+    automatically retry with a simplified filter (drop ``not contains`` /
+    ``contains`` clauses) up to two times and tell the caller via the
+    ``simplified_from`` field so the LLM can post-filter client-side.
     """
-    params = {"$filter": filter_expr, "$top": max(1, min(top, 100))}
-    items: List[Dict[str, Any]] = []
-    next_url: Optional[str] = None
     as_of = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    try:
-        with httpx.Client(timeout=_DEFAULT_TIMEOUT) as client:
-            while True:
-                r = client.get(next_url) if next_url else client.get(
-                    _AZURE_PRICES_BASE, params=params
-                )
-                r.raise_for_status()
-                data = r.json()
-                for it in data.get("Items") or []:
-                    items.append(_trim_azure_item(it))
-                    if len(items) >= max_items:
+    attempt_filter = filter_expr
+    simplified_steps: List[str] = []
+
+    for attempt in range(3):
+        params = {"$filter": attempt_filter, "$top": max(1, min(top, 100))}
+        items: List[Dict[str, Any]] = []
+        next_url: Optional[str] = None
+        try:
+            with httpx.Client(timeout=_DEFAULT_TIMEOUT) as client:
+                while True:
+                    r = client.get(next_url) if next_url else client.get(
+                        _AZURE_PRICES_BASE, params=params
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    for it in data.get("Items") or []:
+                        items.append(_trim_azure_item(it))
+                        if len(items) >= max_items:
+                            break
+                    next_url = data.get("NextPageLink")
+                    if not next_url or len(items) >= max_items:
                         break
-                next_url = data.get("NextPageLink")
-                if not next_url or len(items) >= max_items:
-                    break
-    except Exception as e:  # pragma: no cover — surfaced to the LLM as text
-        logger.warning("Azure retail query failed (%s): %s", filter_expr, e)
-        return {
-            "ok": False,
-            "error": str(e),
-            "filter": filter_expr,
-            "items": [],
-            "count": 0,
-            "as_of": as_of,
-            "source": "azure-retail-prices",
-        }
+            return {
+                "ok": True,
+                "filter": attempt_filter,
+                "simplified_from": filter_expr if simplified_steps else None,
+                "simplification_steps": simplified_steps or None,
+                "items": items,
+                "count": len(items),
+                "truncated": len(items) >= max_items,
+                "as_of": as_of,
+                "source": "azure-retail-prices",
+                "source_url": _AZURE_PRICES_BASE,
+            }
+        except httpx.HTTPStatusError as e:
+            # Retail Prices returns 400 on filter complexity / syntax issues.
+            # Try simplifying once or twice.
+            if e.response is not None and e.response.status_code == 400 and attempt < 2:
+                simpler = _simplify_retail_filter(attempt_filter)
+                if simpler:
+                    simplified_steps.append(f"dropped clause(s) on 400: {attempt_filter} → {simpler}")
+                    attempt_filter = simpler
+                    continue
+            logger.warning("Azure retail query failed (%s): %s", attempt_filter, e)
+            return {
+                "ok": False,
+                "error": str(e),
+                "hint": (
+                    "Azure Retail Prices rejected this filter (HTTP 400).  Try fewer "
+                    "conjuncts — drop `contains(...)` / `not contains(...)` clauses and "
+                    "post-filter the items in your reasoning instead."
+                ),
+                "filter": attempt_filter,
+                "original_filter": filter_expr,
+                "simplification_steps": simplified_steps or None,
+                "items": [],
+                "count": 0,
+                "as_of": as_of,
+                "source": "azure-retail-prices",
+            }
+        except Exception as e:
+            logger.warning("Azure retail query failed (%s): %s", attempt_filter, e)
+            return {
+                "ok": False,
+                "error": str(e),
+                "filter": attempt_filter,
+                "original_filter": filter_expr,
+                "items": [],
+                "count": 0,
+                "as_of": as_of,
+                "source": "azure-retail-prices",
+            }
+
+    # Loop exhausted (shouldn't happen — break/return covers all paths)
     return {
-        "ok": True,
-        "filter": filter_expr,
-        "items": items,
-        "count": len(items),
-        "truncated": len(items) >= max_items,
-        "as_of": as_of,
-        "source": "azure-retail-prices",
-        "source_url": _AZURE_PRICES_BASE,
+        "ok": False,
+        "error": "exhausted simplification attempts",
+        "filter": attempt_filter,
+        "items": [], "count": 0, "as_of": as_of, "source": "azure-retail-prices",
     }
 
 

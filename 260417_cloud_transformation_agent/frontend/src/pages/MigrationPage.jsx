@@ -4,67 +4,273 @@ import {
   getMigrationStatus,
   getActiveMigrationJob,
   fetchAzureMappings,
+  fetchMigrationOutputs,
+  deletePlanOutput,
+  generateDataMigrationScripts,
 } from "../api/apiClient";
 import Pagination, { usePagination } from "../components/Pagination";
 import TerraformViewer from "../components/TerraformViewer";
 
-function PlanResultView({ result, runId, showExecutionLog = false }) {
+/* ── 데이터 이전 스크립트 섹션 ────────────────────────────────────────
+   scopedRows에 RDS / S3 / ElastiCache 가 포함되어 있으면 자동으로
+   해당 데이터 이전 커맨드(pg_dump, AzCopy, redis RDB 등)를 표시한다.
+   Plan 결과 옆에 독립 블록으로 항상 표시.
+─────────────────────────────────────────────────────────────────── */
+
+const DATA_RESOURCE_TYPES = new Set(["rds", "s3", "elasticache"]);
+
+function DataMigrationSection({ scopedRows, azureRegion }) {
+  const [scripts, setScripts] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+
+  const dataResources = useMemo(() =>
+    (scopedRows || [])
+      .filter(r => DATA_RESOURCE_TYPES.has((r._type || r.service || "").toLowerCase()))
+      .map(r => ({
+        _type:    (r._type || r.service || "").toLowerCase(),
+        id:       r.id,
+        name:     r.name,
+        arn:      r.arn,
+        engine:   r.details?.engine,
+        endpoint: r.details?.endpoint,
+        runtime:  r.details?.runtime,
+      })),
+    [scopedRows]
+  );
+
+  // 리소스가 변경되면 자동 재실행
+  useEffect(() => {
+    if (!dataResources.length) {
+      setScripts(null);
+      return;
+    }
+    setLoading(true); setError(null);
+    generateDataMigrationScripts({ resources: dataResources, azureRegion })
+      .then(setScripts)
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [dataResources, azureRegion]);
+
+  if (!dataResources.length) return null;
+
+  return (
+    <details className="result-details" open>
+      <summary>
+        🟡 데이터 이전 스크립트 ({dataResources.length}개 리소스 · Terraform 적용 후 별도 실행)
+        {loading && <span className="spinner" style={{ marginLeft: 8, width: 12, height: 12 }} />}
+      </summary>
+
+      {error && <div className="form-error" style={{ margin: "8px 0" }}>{error}</div>}
+
+      {!loading && !error && scripts?.scripts?.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 8 }}>
+          {scripts.scripts.map((s, i) => (
+            <div key={i} style={{
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-sm)",
+              overflow: "hidden",
+            }}>
+              <div style={{
+                padding: "9px 14px",
+                background: "rgba(217,119,6,0.08)",
+                borderBottom: "1px solid var(--color-border)",
+                fontSize: "0.85rem", fontWeight: 600,
+              }}>
+                {s.title}
+                <span style={{
+                  marginLeft: 8, fontWeight: 400,
+                  color: "var(--color-text-light)", fontSize: "0.78rem",
+                }}>
+                  — {s.resource}
+                </span>
+              </div>
+
+              <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                {s.steps.map((step, si) => (
+                  <div key={si}>
+                    <div style={{ fontSize: "0.74rem", color: "var(--color-text-light)", marginBottom: 4 }}>
+                      {step.label}
+                    </div>
+                    <pre style={{
+                      margin: 0, padding: "8px 12px",
+                      background: "#0d1117", borderRadius: "var(--radius-sm)",
+                      fontSize: "0.78rem", fontFamily: "monospace",
+                      color: "#00d4aa", overflowX: "auto",
+                      whiteSpace: "pre-wrap", wordBreak: "break-all",
+                    }}>
+                      {step.command}
+                    </pre>
+                  </div>
+                ))}
+                {s.notes && (
+                  <div style={{
+                    fontSize: "0.76rem", color: "var(--color-text-light)",
+                    borderLeft: "2px solid var(--color-accent)", paddingLeft: 10,
+                    marginTop: 4,
+                  }}>
+                    💡 {s.notes}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function MappingSummaryTable({ mappings }) {
+  const rows = (mappings || []).filter(Boolean);
+  const tco = useMemo(() => {
+    let aws = 0, azure = 0, withPrices = 0;
+    for (const m of rows) {
+      const a = m?.aws_price?.monthly_usd;
+      const z = m?.azure_price?.monthly_usd;
+      if (typeof a === "number" && typeof z === "number") {
+        aws += a; azure += z; withPrices += 1;
+      }
+    }
+    return { aws, azure, withPrices, delta: azure - aws };
+  }, [rows]);
+
+  if (!rows.length) return null;
+
+  const fmt = (n) => typeof n === "number"
+    ? `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+    : "—";
+
+  return (
+    <div style={{
+      marginBottom: 12, padding: "12px 14px",
+      background: "var(--color-bg)", border: "1px solid var(--color-border)",
+      borderRadius: "var(--radius-sm)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+        <strong style={{ fontSize: "0.9rem" }}>🔁 리소스 매핑 ({rows.length}개)</strong>
+        {tco.withPrices > 0 && (
+          <>
+            <span style={{ fontSize: "0.78rem", color: "var(--color-text-light)" }}>
+              월 비용 추정 (가격 비교 가능 {tco.withPrices}개): AWS <strong>{fmt(tco.aws)}</strong> →
+              Azure <strong>{fmt(tco.azure)}</strong> · 차이 <strong style={{
+                color: tco.delta < 0 ? "#16a34a" : tco.delta > 0 ? "#d97706" : "var(--color-text)",
+              }}>{tco.delta >= 0 ? "+" : ""}{fmt(tco.delta)}</strong>
+            </span>
+          </>
+        )}
+      </div>
+      <div style={{
+        border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)",
+        overflow: "auto", maxHeight: 380,
+      }}>
+        <table style={{
+          width: "100%", borderCollapse: "collapse", fontSize: "0.78rem",
+        }}>
+          <thead style={{ background: "var(--color-surface)", position: "sticky", top: 0 }}>
+            <tr>
+              <th style={_th}>AWS</th>
+              <th style={_th}>Type</th>
+              <th style={_th}>스펙</th>
+              <th style={_th}>→ Azure</th>
+              <th style={_th}>Resource</th>
+              <th style={_th}>SKU</th>
+              <th style={{..._th, textAlign:"right"}}>AWS / 월</th>
+              <th style={{..._th, textAlign:"right"}}>Azure / 월</th>
+              <th style={{..._th, textAlign:"right"}}>차이</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m, i) => {
+              const aws = m?.aws_price?.monthly_usd;
+              const az  = m?.azure_price?.monthly_usd;
+              const delta = (typeof aws === "number" && typeof az === "number") ? az - aws : null;
+              return (
+                <tr key={i} style={{ borderTop: "1px solid var(--color-border)" }}>
+                  <td style={_td} title={m?.aws_key}>{m?.aws_name || m?.aws_key || "—"}</td>
+                  <td style={_td}>{m?.aws_type || "—"}</td>
+                  <td style={{..._td, color:"var(--color-text-light)"}}>
+                    {m?.aws_spec ? Object.entries(m.aws_spec).slice(0,2).map(([k,v]) => `${k}:${v}`).join(", ") : "—"}
+                  </td>
+                  <td style={_td}>{m?.azure_service || "—"}</td>
+                  <td style={{..._td, fontFamily:"monospace", fontSize:"0.74rem"}}>{m?.azure_resource_type || "—"}</td>
+                  <td style={{..._td, fontFamily:"monospace", fontSize:"0.74rem"}}>{m?.azure_sku_suggestion || "—"}</td>
+                  <td style={{..._td, textAlign:"right"}}>{fmt(aws)}</td>
+                  <td style={{..._td, textAlign:"right"}}>{fmt(az)}</td>
+                  <td style={{..._td, textAlign:"right",
+                    color: delta == null ? "var(--color-text-light)"
+                      : delta < 0 ? "#16a34a" : delta > 0 ? "#d97706" : "var(--color-text)",
+                    fontWeight: delta != null ? 600 : 400,
+                  }}>
+                    {delta == null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta)}`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const _th = {
+  textAlign: "left", padding: "6px 10px", fontSize: "0.72rem",
+  color: "var(--color-text-light)", fontWeight: 700,
+  borderBottom: "1px solid var(--color-border)",
+  whiteSpace: "nowrap",
+};
+const _td = {
+  padding: "6px 10px", fontSize: "0.78rem",
+  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+  maxWidth: 220,
+};
+
+
+function PlanResultView({ result, runId, architecture, mappings, scopedRows, azureRegion, showExecutionLog = false }) {
   const jd = result?.json_data;
-  const hasSteps = jd?.steps?.length > 0;
   const tfFiles = Array.isArray(jd?.terraform) ? jd.terraform : [];
+  const v2      = jd?.v2;
+  const validationPassed = result?.validation_passed ?? v2?.validation_passed;
+  const pipeline = result?.pipeline || (v2 ? "v2" : "v1");
+
+  const moduleNames = (v2?.terraform_modules || []).map(m => m.name).filter(Boolean);
 
   return (
     <div className="analysis-result-view">
-      {tfFiles.length > 0 && <TerraformViewer files={tfFiles} runId={runId} />}
-      {hasSteps && (
-        <div className="result-section">
-          <h3 className="result-section-title">Phases ({jd.steps.length})</h3>
-          <div className="table-wrapper analysis-result-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Phase</th>
-                  <th>Description</th>
-                  <th>Azure targets</th>
-                </tr>
-              </thead>
-              <tbody>
-                {jd.steps.map((s, i) => (
-                  <tr key={i}>
-                    <td><strong>{s.phase}</strong></td>
-                    <td>{s.description}</td>
-                    <td>{(s.azure_targets || []).join(", ") || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      {/* 1. 출력 토폴로지 시각화 (Azure) */}
+      {architecture && (
+        <div style={{ marginBottom: 12, padding: "12px 14px", background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)" }}>
+          <TopologyView architecture={architecture} mappings={mappings} side="azure" title="🟦 Azure 토폴로지 (Terraform 적용 결과)" />
         </div>
       )}
-      {result?.final_output && (
-        <details className="result-details" open>
-          <summary>전체 계획 (Markdown)</summary>
-          <div className="result-summary markdown-body">
-            {result.final_output.split("\n").map((line, i) => (
-              <p key={i}>{line || "\u00A0"}</p>
-            ))}
-          </div>
-        </details>
+
+      {/* 2. 매핑 결과 (가격 비교) */}
+      <MappingSummaryTable mappings={mappings} />
+
+      {/* 3. Terraform 코드 — file browser (validation 배너는 viewer 헤더 아래) */}
+      {tfFiles.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <TerraformViewer
+            files={tfFiles}
+            runId={runId}
+            validationPassed={pipeline === "v2" ? validationPassed : null}
+            moduleNames={moduleNames}
+          />
+        </div>
       )}
+
+      {/* 4. 데이터 이전 스크립트 */}
+      <DataMigrationSection scopedRows={scopedRows} azureRegion={azureRegion} />
+
       {showExecutionLog && result?.execution_log && (
-        <details className="result-details">
+        <details className="result-details" style={{ marginTop: 8 }}>
           <summary>실행 로그</summary>
           <pre className="log-pre">
             {Array.isArray(result.execution_log)
               ? result.execution_log.join("\n")
               : result.execution_log}
           </pre>
-        </details>
-      )}
-      {jd && !hasSteps && (
-        <details className="result-details">
-          <summary>Raw JSON</summary>
-          <pre>{JSON.stringify(jd, null, 2)}</pre>
         </details>
       )}
     </div>
@@ -172,6 +378,7 @@ function TargetRegionPicker({ azureRegion, setAzureRegion, disabled }) {
           borderRadius: "var(--radius-sm)",
           border: "1px solid var(--color-border)",
           background: "var(--color-surface)",
+          color: "var(--color-text)",
           maxWidth: 260,
         }}
         title="Azure region for mapping (Retail API prices) and migration plan / Terraform"
@@ -200,6 +407,8 @@ function TargetRegionPicker({ azureRegion, setAzureRegion, disabled }) {
             width: 200,
             borderRadius: "var(--radius-sm)",
             border: "1px solid var(--color-border)",
+            color: "var(--color-text)",
+            background: "var(--color-surface)",
           }}
           aria-label="Custom Azure region id"
         />
@@ -215,7 +424,7 @@ const MAPPING_CONCURRENCY = 10;
  * Shared mapping hook: **one API call per resource**, with up to
  * ``MAPPING_CONCURRENCY`` in flight.  Pause aborts all in-flight requests.
  */
-export function useAzureMapping(rows, azureRegion, sourceAwsRegion) {
+export function useAzureMapping(rows, azureRegion, sourceAwsRegion, targetSubscriptionId = "") {
   /** aws_key → mapping row from the backend */
   const [mapByKey, setMapByKey] = useState({});
   /** idle | running | paused | complete */
@@ -342,6 +551,7 @@ export function useAzureMapping(rows, azureRegion, sourceAwsRegion) {
             resources: [buildMappingPayloadRow(rows[i])],
             targetAzureRegion: targetRegion,
             sourceAwsRegion: sourceRegion,
+            targetSubscriptionId,
             signal: ctrl.signal,
           });
           const one = (res.mappings || [])[0];
@@ -475,10 +685,512 @@ export function useAzureMapping(rows, azureRegion, sourceAwsRegion) {
 /**
  * Scope summary with mapping progress (up to ``mappingConcurrency`` parallel).
  */
+/* ── Cost insight helpers ─────────────────────────────────────────── */
+
+const COST_CAT_META = {
+  savings:       { color: "#16a34a", bg: "rgba(22,163,74,0.10)",  border: "#16a34a", icon: "💰", label: "절감" },
+  premium:       { color: "#d97706", bg: "rgba(217,119,6,0.10)",  border: "#d97706", icon: "📈", label: "추가 비용" },
+  neutral:       { color: "#94a3b8", bg: "rgba(148,163,184,0.08)",border: "var(--color-border)", icon: "≈",  label: "동등" },
+  "usage-based": { color: "#60a5fa", bg: "rgba(96,165,250,0.08)", border: "var(--color-border)", icon: "📊", label: "종량제" },
+  free:          { color: "var(--color-text-light)", bg: "transparent", border: "var(--color-border)", icon: "○", label: "무료" },
+};
+
+/** Aggregate TCO from accumulated mappings (matches backend _compute_tco_summary). */
+function computeTcoSummary(mappings) {
+  let totalAws = 0, totalAzure = 0;
+  let totalAzure1yr = 0, totalAzure3yr = 0;
+  let hasRi1yr = false, hasRi3yr = false;
+  let compared = 0, usageBased = 0, freeCount = 0;
+  const savingsNames = [], premiumNames = [];
+  const tipsAccum = [];
+
+  for (const m of mappings || []) {
+    if (!m) continue;
+    const a = m.aws_price?.monthly_usd;
+    const z = m.azure_price?.monthly_usd;
+    const z1 = m.azure_price?.monthly_1yr_ri_usd;
+    const z3 = m.azure_price?.monthly_3yr_ri_usd;
+
+    if (typeof a === "number" && typeof z === "number") {
+      totalAws += a;
+      totalAzure += z;
+      // RI fallback to on-demand if SKU has no RI price
+      if (typeof z1 === "number") { totalAzure1yr += z1; hasRi1yr = true; } else { totalAzure1yr += z; }
+      if (typeof z3 === "number") { totalAzure3yr += z3; hasRi3yr = true; } else { totalAzure3yr += z; }
+
+      if (a === 0 && z === 0) {
+        freeCount++;
+      } else {
+        compared++;
+        const cat = m.cost_insight?.category;
+        const name = m.aws_name || m.aws_key || "";
+        if (cat === "savings") savingsNames.push(name);
+        else if (cat === "premium") premiumNames.push(name);
+      }
+    } else {
+      usageBased++;
+    }
+
+    for (const tip of (m.cost_tips || [])) {
+      if (tip && !tipsAccum.includes(tip)) tipsAccum.push(tip);
+    }
+  }
+
+  const monthlySave    = totalAws - totalAzure;
+  const monthlySave1yr = totalAws - totalAzure1yr;
+  const monthlySave3yr = totalAws - totalAzure3yr;
+  const pct    = totalAws > 0 ? (monthlySave    / totalAws) * 100 : 0;
+  const pct1yr = totalAws > 0 ? (monthlySave1yr / totalAws) * 100 : 0;
+  const pct3yr = totalAws > 0 ? (monthlySave3yr / totalAws) * 100 : 0;
+
+  return {
+    totalAws, totalAzure, totalAzure1yr, totalAzure3yr,
+    monthlySave, monthlySave1yr, monthlySave3yr,
+    pct, pct1yr, pct3yr,
+    annualSave: monthlySave * 12,
+    threeYrSave: monthlySave * 36,
+    annualSave1yr: monthlySave1yr * 12,
+    threeYrSave3yr: monthlySave3yr * 36,
+    hasRi1yr, hasRi3yr,
+    compared, usageBased, freeCount,
+    total: mappings?.length || 0,
+    savingsNames, premiumNames,
+    aggregatedTips: tipsAccum.slice(0, 8),
+  };
+}
+
+/** TCO summary banner — workload-wide cost comparison with RI scenarios. */
+function TcoSummaryBanner({ summary }) {
+  if (!summary || summary.compared === 0) return null;
+
+  const isSavings  = summary.monthlySave > 0;
+  const isPremium  = summary.monthlySave < 0;
+  const accentCol  = isSavings ? "#16a34a" : isPremium ? "#d97706" : "#94a3b8";
+  const headlineBg = isSavings ? "rgba(22,163,74,0.10)" : isPremium ? "rgba(217,119,6,0.10)" : "var(--color-surface)";
+
+  return (
+    <div style={{
+      marginBottom: 12,
+      border: `1px solid ${accentCol}`,
+      borderRadius: "var(--radius-sm)",
+      overflow: "hidden",
+      background: headlineBg,
+    }}>
+      {/* Top headline — On-demand */}
+      <div style={{ padding: "14px 18px 12px" }}>
+        <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-light)", marginBottom: 6 }}>
+          💰 마이그레이션 비용 분석 (On-Demand)
+        </div>
+        <div style={{
+          display: "flex", alignItems: "baseline", gap: 14,
+          fontSize: "1.5rem", fontWeight: 700, fontVariantNumeric: "tabular-nums",
+        }}>
+          <span style={{ color: "var(--color-text-light)", fontWeight: 500 }}>
+            ${summary.totalAws.toFixed(2)}/월
+          </span>
+          <span style={{ fontSize: "1rem", color: "var(--color-text-light)" }}>→</span>
+          <span style={{ color: accentCol }}>
+            ${summary.totalAzure.toFixed(2)}/월
+          </span>
+          <span style={{
+            fontSize: "0.78rem", fontWeight: 600, padding: "3px 10px",
+            borderRadius: 99, background: accentCol, color: "#0d1117",
+            marginLeft: 8,
+          }}>
+            {isSavings ? `▼ ${summary.pct.toFixed(1)}%` : isPremium ? `▲ ${Math.abs(summary.pct).toFixed(1)}%` : "동등"}
+          </span>
+        </div>
+      </div>
+
+      {/* On-demand stats grid */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+        gap: 1, background: "var(--color-border)",
+        borderTop: "1px solid var(--color-border)",
+      }}>
+        <Stat label="월 절감액"    value={isSavings ? `$${summary.monthlySave.toFixed(2)}` : isPremium ? `−$${Math.abs(summary.monthlySave).toFixed(2)}` : "$0.00"} accent={accentCol} />
+        <Stat label="연 절감액"    value={isSavings ? `$${summary.annualSave.toFixed(0)}`  : isPremium ? `−$${Math.abs(summary.annualSave).toFixed(0)}`  : "$0"}    accent={accentCol} bold />
+        <Stat label="3년 누적"     value={isSavings ? `$${summary.threeYrSave.toFixed(0)}` : isPremium ? `−$${Math.abs(summary.threeYrSave).toFixed(0)}` : "$0"}    accent={accentCol} />
+        <Stat label="비교 가능"    value={`${summary.compared}/${summary.total}개`} />
+      </div>
+
+      {/* Reserved Instance scenarios (long-term commitment savings) */}
+      {(summary.hasRi1yr || summary.hasRi3yr) && (
+        <div style={{
+          padding: "12px 18px",
+          borderTop: "1px solid var(--color-border)",
+          background: "rgba(0,212,170,0.04)",
+        }}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-accent)", marginBottom: 8 }}>
+            🎯 Reserved Instance 적용 시 추가 절감
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {summary.hasRi1yr && (
+              <RiScenarioCard
+                title="1년 약정"
+                azure={summary.totalAzure1yr}
+                monthly={summary.monthlySave1yr}
+                annual={summary.annualSave1yr}
+                pct={summary.pct1yr}
+                aws={summary.totalAws}
+              />
+            )}
+            {summary.hasRi3yr && (
+              <RiScenarioCard
+                title="3년 약정 (최대 절감)"
+                azure={summary.totalAzure3yr}
+                monthly={summary.monthlySave3yr}
+                annual={summary.threeYrSave3yr}
+                pct={summary.pct3yr}
+                aws={summary.totalAws}
+                highlight
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Aggregated cost-optimization tips */}
+      {summary.aggregatedTips?.length > 0 && (
+        <div style={{
+          padding: "10px 18px",
+          borderTop: "1px solid var(--color-border)",
+          background: "rgba(96,165,250,0.05)",
+        }}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#60a5fa", marginBottom: 6 }}>
+            💡 추가 비용 최적화 옵션
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.78rem", color: "var(--color-text)", lineHeight: 1.6 }}>
+            {summary.aggregatedTips.map((tip, i) => <li key={i}>{tip}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {/* Premium resources warning */}
+      {summary.premiumNames.length > 0 && (
+        <div style={{ padding: "8px 18px", fontSize: "0.78rem", color: "#d97706", borderTop: "1px solid var(--color-border)", background: "rgba(217,119,6,0.04)" }}>
+          ⚠ Azure가 더 비싼 리소스: <strong>{summary.premiumNames.slice(0, 3).join(", ")}</strong>
+          {summary.premiumNames.length > 3 && ` 외 ${summary.premiumNames.length - 3}개`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A small RI-scenario card showing monthly Azure cost + savings vs on-demand AWS. */
+function RiScenarioCard({ title, azure, monthly, annual, pct, aws, highlight }) {
+  const positive = monthly > 0;
+  const accent = positive ? "#16a34a" : "#d97706";
+  return (
+    <div style={{
+      padding: "10px 14px",
+      background: highlight ? "rgba(22,163,74,0.08)" : "var(--color-surface)",
+      border: highlight ? `1px solid ${accent}` : "1px solid var(--color-border)",
+      borderRadius: "var(--radius-sm)",
+    }}>
+      <div style={{ fontSize: "0.72rem", fontWeight: 600, color: "var(--color-text-light)", marginBottom: 4 }}>
+        {title}
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: "1.1rem", fontWeight: 700, color: accent, fontVariantNumeric: "tabular-nums" }}>
+          ${azure.toFixed(2)}/월
+        </span>
+        <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+          (vs ${aws.toFixed(2)} AWS)
+        </span>
+      </div>
+      <div style={{ fontSize: "0.78rem", color: accent, fontWeight: 600 }}>
+        {positive
+          ? `▼ ${pct.toFixed(1)}% · 월 $${monthly.toFixed(2)} 절감`
+          : `▲ ${Math.abs(pct).toFixed(1)}%`}
+      </div>
+      <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)", marginTop: 2 }}>
+        {title.includes("3년")
+          ? `3년 누적 $${annual.toFixed(0)}`
+          : `연 $${annual.toFixed(0)} 절감`}
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, accent, bold }) {
+  return (
+    <div style={{
+      padding: "10px 14px",
+      background: "var(--color-surface)",
+      display: "flex", flexDirection: "column", gap: 3,
+    }}>
+      <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: bold ? "1.1rem" : "0.95rem", fontWeight: 700, fontVariantNumeric: "tabular-nums",
+        color: accent || "var(--color-text)",
+      }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** Inline cost-insight badge shown next to the price, in MappingDetail. */
+function CostInsightBadge({ insight }) {
+  if (!insight?.headline) return null;
+  const meta = COST_CAT_META[insight.category] || COST_CAT_META.neutral;
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      padding: "4px 10px", borderRadius: 99,
+      background: meta.bg, border: `1px solid ${meta.border}`,
+      fontSize: "0.78rem", fontWeight: 600, color: meta.color,
+    }}>
+      <span>{meta.icon}</span>
+      <span>{insight.headline}</span>
+    </div>
+  );
+}
+
+
+/* ── Topology visualization ──────────────────────────────────────
+   AWS 아키텍처(입력)와 Azure 아키텍처(출력)를 동일한 트리 구조로 그립니다.
+   리소스 매핑(SKU 등)은 Azure 트리에 함께 표시.
+─────────────────────────────────────────────────────────────────── */
+
+function _slug(s) {
+  return (s || "").replace(/[^a-zA-Z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").toLowerCase() || "x";
+}
+function _stgName(s) {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24) || "stor";
+}
+
+const RES_ICON = {
+  ec2: "🖥", rds: "🗄", elb: "⚖", lambda: "λ", s3: "🪣", ecs: "🧩",
+  vm: "🖥", db: "🗄", lb: "⚖", fn: "λ", storage: "💾", aks: "🧩",
+};
+
+/** Convert a single AWS resource into an Azure equivalent (uses Mapping when available). */
+function awsResourceToAzure(r, mappingByKey) {
+  const m = mappingByKey.get(r.arn) || mappingByKey.get(r.id) || {};
+  const t = (r._type || "").toLowerCase();
+  if (t === "ec2") {
+    return {
+      kind: "vm",
+      label: "VM",
+      name: r.name || r.id,
+      sub:  m.azure_sku_suggestion || (r.instance_type ? `Standard_B (mapping pending)` : "VM"),
+      tfType: "azurerm_linux_virtual_machine",
+    };
+  }
+  if (t === "rds") {
+    const isMy = (r.engine || "").toLowerCase().includes("mysql");
+    return {
+      kind: "db",
+      label: isMy ? "Azure DB MySQL" : "Azure DB PostgreSQL",
+      name: r.id,
+      sub:  m.azure_sku_suggestion || "B_Standard_B1ms",
+      tfType: m.azure_resource_type || (isMy ? "azurerm_mysql_flexible_server" : "azurerm_postgresql_flexible_server"),
+    };
+  }
+  if (t === "elb" || t === "elasticloadbalancing") {
+    return { kind: "lb", label: "Application Gateway", name: r.name, sub: r.type || "ALB", tfType: "azurerm_application_gateway" };
+  }
+  if (t === "lambda") {
+    return { kind: "fn", label: "Function App", name: r.name, sub: r.runtime || "linux", tfType: "azurerm_linux_function_app" };
+  }
+  if (t === "ecs") {
+    return { kind: "aks", label: "Container App", name: r.name, sub: "container-app", tfType: "azurerm_container_app" };
+  }
+  return { kind: t || "res", label: m.azure_service || t.toUpperCase(), name: r.name || r.id, sub: m.azure_sku_suggestion || "" };
+}
+
+function buildAwsTree(arch) {
+  if (!arch) return { vpcs: [], global: [] };
+  const vpcs = (arch.networking || []).map(v => ({
+    id: v.id, name: v.name || v.id, cidr: v.cidr,
+    subnets: (v.subnets || []).map(s => ({
+      id: s.id, name: s.name || s.id, cidr: s.cidr, az: s.az, public: !!s.public,
+      resources: (s.resources || []).map(r => ({
+        kind: (r._type || "res").toLowerCase(),
+        label: (r._type || "RES").toUpperCase(),
+        name:  r.name || r.id,
+        sub:   r.instance_type || r.engine || r.runtime || r.type || "",
+      })),
+    })),
+    direct: (v.direct_resources || []).map(r => ({
+      kind: (r._type || "res").toLowerCase(),
+      label: (r._type || "RES").toUpperCase(),
+      name:  r.name || r.id,
+      sub:   r.engine || r.type || r.runtime || "",
+    })),
+    sgs: (v.security_groups || []).map(sg => ({
+      id: sg.id, name: sg.name, rules: (sg.ingress || []).length + (sg.egress || []).length,
+    })),
+  }));
+  const global = [
+    ...(arch.s3  || []).map(b => ({ kind: "s3",  label: "S3 Bucket", name: b.name })),
+    ...(arch.ecs || []).map(c => ({ kind: "ecs", label: "ECS Cluster", name: c.name })),
+  ];
+  return { vpcs, global };
+}
+
+function buildAzureTree(arch, mappings) {
+  if (!arch) return { vpcs: [], global: [] };
+  const byKey = new Map();
+  for (const m of mappings || []) {
+    if (m.aws_key) byKey.set(m.aws_key, m);
+  }
+  const vpcs = (arch.networking || []).map(v => ({
+    id: _slug(v.name || v.id),
+    name: `${v.name || v.id}-vnet`,
+    cidr: v.cidr,
+    subnets: (v.subnets || []).map(s => ({
+      id: _slug(s.name || s.id),
+      name: s.name || s.id,
+      cidr: s.cidr, az: s.az, public: !!s.public,
+      resources: (s.resources || []).map(r => awsResourceToAzure(r, byKey)),
+    })),
+    direct: (v.direct_resources || []).map(r => awsResourceToAzure(r, byKey)),
+    sgs: (v.security_groups || []).map(sg => ({
+      id: _slug(sg.name || sg.id),
+      name: `${sg.name}-nsg`,
+      rules: (sg.ingress || []).length + (sg.egress || []).length,
+    })),
+  }));
+  const global = [
+    ...(arch.s3  || []).map(b => ({ kind: "storage", label: "Storage Account", name: _stgName(b.name), sourceName: b.name })),
+    ...(arch.ecs || []).map(c => ({ kind: "aks",     label: "Container App",   name: c.name })),
+  ];
+  return { vpcs, global };
+}
+
+function ResChip({ item, side }) {
+  const accent = side === "azure" ? "#00d4aa" : "#fb923c";
+  const icon = RES_ICON[item.kind] || "•";
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      padding: "4px 8px", borderRadius: "var(--radius-sm)",
+      background: side === "azure" ? "rgba(0,212,170,0.06)" : "rgba(251,146,60,0.06)",
+      border: `1px solid ${side === "azure" ? "rgba(0,212,170,0.3)" : "rgba(251,146,60,0.3)"}`,
+      fontSize: "0.74rem", whiteSpace: "nowrap", maxWidth: "100%",
+    }}>
+      <span>{icon}</span>
+      <span style={{ color: accent, fontWeight: 600, fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.03em" }}>{item.label}</span>
+      <strong style={{ color: "var(--color-text)" }}>{item.name}</strong>
+      {item.sub && <span style={{ color: "var(--color-text-light)", fontFamily: "monospace", fontSize: "0.7rem" }}>{item.sub}</span>}
+    </div>
+  );
+}
+
+function VpcDiagram({ vpc, side }) {
+  const accent = side === "azure" ? "#00d4aa" : "#fb923c";
+  const label  = side === "azure" ? "VNet" : "VPC";
+  const totalRes =
+    vpc.subnets.reduce((n, s) => n + (s.resources || []).length, 0)
+    + (vpc.direct || []).length;
+
+  return (
+    <div style={{
+      border: `1px solid ${accent}`,
+      borderRadius: "var(--radius-sm)",
+      background: side === "azure" ? "rgba(0,212,170,0.03)" : "rgba(251,146,60,0.03)",
+      padding: "10px 12px", marginBottom: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: "0.95rem" }}>🌐</span>
+        <span style={{ fontSize: "0.7rem", fontWeight: 700, color: accent, letterSpacing: "0.05em", textTransform: "uppercase" }}>{label}</span>
+        <strong style={{ fontSize: "0.85rem" }}>{vpc.name}</strong>
+        {vpc.cidr && <code style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>{vpc.cidr}</code>}
+        <span style={{ marginLeft: "auto", fontSize: "0.72rem", color: "var(--color-text-light)" }}>{totalRes}개 리소스</span>
+      </div>
+
+      {/* Subnets with resources */}
+      {vpc.subnets.filter(s => (s.resources || []).length > 0).map((s, i) => (
+        <div key={i} style={{
+          marginLeft: 12, paddingLeft: 12,
+          borderLeft: `2px solid ${accent}40`,
+          paddingTop: 4, paddingBottom: 4,
+        }}>
+          <div style={{ fontSize: "0.76rem", color: "var(--color-text-light)", marginBottom: 4 }}>
+            📡 <strong style={{ color: "var(--color-text)" }}>{s.name}</strong>
+            {s.cidr && <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{s.cidr}</span>}
+            {s.az && <span style={{ marginLeft: 6 }}>· {s.az}</span>}
+            {" · "}
+            <span style={{ color: s.public ? "#f59e0b" : "#94a3b8" }}>{s.public ? "PUBLIC" : "PRIVATE"}</span>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingLeft: 16 }}>
+            {(s.resources || []).map((r, j) => <ResChip key={j} item={r} side={side} />)}
+          </div>
+        </div>
+      ))}
+
+      {/* VPC-level direct resources (RDS, ELB) */}
+      {(vpc.direct || []).length > 0 && (
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${accent}40` }}>
+          <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            VPC-level
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {vpc.direct.map((r, j) => <ResChip key={j} item={r} side={side} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Security groups summary */}
+      {(vpc.sgs || []).length > 0 && (
+        <div style={{ marginTop: 6, fontSize: "0.7rem", color: "var(--color-text-light)" }}>
+          🔒 {side === "azure" ? "NSG" : "Security Group"}: {vpc.sgs.map(sg => sg.name).join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopologyView({ architecture, mappings, side, title }) {
+  const tree = side === "azure"
+    ? buildAzureTree(architecture, mappings)
+    : buildAwsTree(architecture);
+
+  if (!tree.vpcs.length && !tree.global.length) {
+    return (
+      <div style={{ padding: "20px", textAlign: "center", fontSize: "0.82rem", color: "var(--color-text-light)" }}>
+        토폴로지 데이터가 없습니다.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {title && (
+        <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: side === "azure" ? "#00d4aa" : "#fb923c", marginBottom: 8 }}>
+          {title}
+        </div>
+      )}
+      {tree.vpcs.map((vpc, i) => <VpcDiagram key={i} vpc={vpc} side={side} />)}
+      {tree.global.length > 0 && (
+        <div style={{
+          padding: "10px 12px",
+          border: `1px dashed ${side === "azure" ? "#00d4aa" : "#fb923c"}40`,
+          borderRadius: "var(--radius-sm)",
+        }}>
+          <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            글로벌 리소스 (VPC 외부)
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {tree.global.map((r, j) => <ResChip key={j} item={r} side={side} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function ScopeSummaryTable({
   rows,
   meta,
   mapping,
+  architecture,
   onGoToDiscover,
   azureRegion,
   setAzureRegion,
@@ -576,23 +1288,9 @@ function ScopeSummaryTable({
         <div
           style={{ color: "var(--color-text-light)", fontSize: "0.82rem" }}
         >
-          Region:{" "}
-          {meta?.region && (
-            <strong style={{ color: "var(--color-text)" }}>
-              {meta.region}
-            </strong>
-          )}
-          {meta?.resourceGroup && (
-            <>
-              {" / "}
-              <strong style={{ color: "var(--color-text)" }}>
-                {meta.resourceGroup}
-              </strong>
-            </>
-          )}
-          {" — "} Resources: {" "}
+          리소스{" "}
           <strong style={{ color: "var(--color-text)" }}>{rows.length}</strong>
-          {" "} items
+          개
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <TargetRegionPicker
@@ -656,17 +1354,6 @@ function ScopeSummaryTable({
               ⏸ Pause
             </button>
           )}
-          {mappingComplete && !mappingLoading && (
-            <button
-              type="button"
-              className="tab action-btn action-btn--secondary"
-              onClick={() => remapMapping()}
-              style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
-              title="Mapping을 초기화하고 첫 리소스부터 다시 실행합니다"
-            >
-              ↻ Re-map
-            </button>
-          )}
         </div>
       </div>
 
@@ -694,12 +1381,26 @@ function ScopeSummaryTable({
         </div>
       )}
 
-      <div className="table-wrapper analysis-result-table">
+      {/* 💰 워크로드 전체 TCO 요약 — 비교 가능한 매핑이 1개 이상일 때 표시 */}
+      <TcoSummaryBanner summary={computeTcoSummary(mappings)} />
+
+      {/* ── 입력 토폴로지 시각화 (AWS) ── */}
+      {architecture && (
+        <div style={{ marginTop: 12, marginBottom: 12, padding: "12px 14px", background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)" }}>
+          <TopologyView architecture={architecture} side="aws" title="🟧 AWS 토폴로지 (Plan에 입력될 데이터)" />
+        </div>
+      )}
+
+      {/* 리소스/매핑 상세 테이블은 보조 정보로 접어둔다 */}
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: "0.8rem", color: "var(--color-text-light)", padding: "4px 0" }}>
+          리소스별 매핑 상세 (가격·SKU·근거)
+        </summary>
+      <div className="table-wrapper analysis-result-table" style={{ marginTop: 8 }}>
         <table style={{ tableLayout: "fixed", width: "100%" }}>
           <colgroup>
             <col style={{ width: 36 }} />
-            <col style={{ width: 140 }} />
-            <col style={{ width: 150 }} />
+            <col style={{ width: 120 }} />
             <col />
             <col />
             <col style={{ width: 140 }} />
@@ -708,7 +1409,6 @@ function ScopeSummaryTable({
             <tr>
               <th></th>
               <th>Service</th>
-              <th>Type</th>
               <th>Name</th>
               <th>Identifier</th>
               <th>Region</th>
@@ -759,12 +1459,8 @@ function ScopeSummaryTable({
                         ""
                       )}
                     </td>
-                    <td style={ELLIPSIS_CELL} title={r.serviceDisplay}>
-                      <span style={{ marginRight: 6 }}>{r.icon}</span>
-                      <strong>{r.serviceDisplay}</strong>
-                    </td>
-                    <td style={ELLIPSIS_CELL} title={r.type || ""}>
-                      {r.type || "—"}
+                    <td style={ELLIPSIS_CELL} title={r.service || r._type || ""}>
+                      <strong>{(r._type || r.service || "—").toUpperCase()}</strong>
                     </td>
                     <td
                       style={{ ...ELLIPSIS_CELL, fontWeight: 500 }}
@@ -805,7 +1501,7 @@ function ScopeSummaryTable({
                   {isOpen && rowMapping && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={5}
                         style={{
                           background: "var(--color-bg)",
                           padding: "12px 20px 14px 44px",
@@ -823,6 +1519,7 @@ function ScopeSummaryTable({
         </table>
         <Pagination {...pagination} />
       </div>
+      </details>
     </div>
   );
 }
@@ -900,6 +1597,27 @@ function PriceCell({ label, price }) {
           }}
         >
           {formatUsd(price.hourly_usd)} / hr
+        </div>
+      )}
+      {/* Reserved Instance pricing (Azure only — AWS pricing path doesn't fetch RI here) */}
+      {(price?.monthly_1yr_ri_usd != null || price?.monthly_3yr_ri_usd != null) && (
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed var(--color-border)" }}>
+          {price.monthly_1yr_ri_usd != null && (
+            <div style={{ fontSize: "0.72rem", color: "var(--color-text-light)", display: "flex", justifyContent: "space-between" }}>
+              <span>1y RI</span>
+              <span style={{ color: "#16a34a", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                {formatUsd(price.monthly_1yr_ri_usd)} / mo
+              </span>
+            </div>
+          )}
+          {price.monthly_3yr_ri_usd != null && (
+            <div style={{ fontSize: "0.72rem", color: "var(--color-text-light)", display: "flex", justifyContent: "space-between" }}>
+              <span>3y RI</span>
+              <span style={{ color: "#16a34a", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                {formatUsd(price.monthly_3yr_ri_usd)} / mo
+              </span>
+            </div>
+          )}
         </div>
       )}
       {price?.note && (
@@ -1101,6 +1819,28 @@ function MappingDetail({ mapping }) {
         </div>
       </div>
       <PricingBlock mapping={mapping} />
+      {/* 💰 비용 인사이트 — 매핑별 절감 메시지 */}
+      {mapping.cost_insight?.headline && (
+        <div>
+          <CostInsightBadge insight={mapping.cost_insight} />
+        </div>
+      )}
+      {/* 💡 비용 최적화 팁 (per-resource) */}
+      {(mapping.cost_tips || []).length > 0 && (
+        <div style={{
+          background: "rgba(96,165,250,0.06)",
+          border: "1px solid rgba(96,165,250,0.3)",
+          borderRadius: "var(--radius-sm)",
+          padding: "8px 12px",
+        }}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, color: "#60a5fa", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            💡 비용 최적화 팁
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.8rem", color: "var(--color-text)", lineHeight: 1.6 }}>
+            {mapping.cost_tips.map((tip, i) => <li key={i}>{tip}</li>)}
+          </ul>
+        </div>
+      )}
       <div>
         <div
           style={{
@@ -1148,6 +1888,451 @@ function MappingDetail({ mapping }) {
   );
 }
 
+/* ── Confirm modal (in-page, no browser confirm()) ──────── */
+
+function ConfirmModal({ title, body, confirmLabel = "확인", cancelLabel = "취소",
+                       danger = false, busy = false, onConfirm, onCancel }) {
+  // Esc to cancel
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onCancel(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, busy]);
+
+  return (
+    <div
+      onClick={() => !busy && onCancel()}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20,
+      }}>
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-md, 10px)",
+          width: "min(540px, 100%)",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.45)",
+          overflow: "hidden",
+        }}>
+        <div style={{
+          padding: "12px 18px",
+          borderBottom: "1px solid var(--color-border)",
+          background: "var(--color-bg)",
+          fontWeight: 700, fontSize: "0.95rem",
+        }}>
+          {title}
+        </div>
+        <div style={{ padding: "16px 18px", fontSize: "0.85rem", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+          {body}
+        </div>
+        <div style={{
+          display: "flex", gap: 8, padding: "12px 18px",
+          borderTop: "1px solid var(--color-border)",
+          background: "var(--color-bg)", justifyContent: "flex-end",
+        }}>
+          <button type="button" onClick={onCancel} disabled={busy}
+            className="tab action-btn action-btn--secondary"
+            style={{ minHeight: 34, padding: "0 18px" }}>
+            {cancelLabel}
+          </button>
+          <button type="button" onClick={onConfirm} disabled={busy}
+            className={danger ? undefined : "run-btn action-btn"}
+            style={{
+              minHeight: 34, padding: "0 18px",
+              background: danger ? "#dc2626" : undefined,
+              color: danger ? "#fff" : undefined,
+              border: danger ? "1px solid #dc2626" : undefined,
+              borderRadius: danger ? "var(--radius-sm)" : undefined,
+              cursor: busy ? "not-allowed" : "pointer",
+              fontSize: "0.85rem",
+              fontWeight: 600,
+            }}>
+            {busy ? "처리 중…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ── Plans master-detail page ────────────────────────────── */
+
+// Sentinel id used in checkbox selection for the (in-memory) in-progress plan.
+// Treated specially by the delete handler — it can't be deleted from disk
+// because it isn't on disk; instead we clear the React scope state.
+const IN_PROGRESS_ID = "__in_progress__";
+
+const SAVED_PLANS_KEY = "migrationPlans:v1";
+
+function _loadSavedPlans() {
+  try {
+    const raw = localStorage.getItem(SAVED_PLANS_KEY);
+    const arr = JSON.parse(raw || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function _persistSavedPlans(plans) {
+  try {
+    localStorage.setItem(SAVED_PLANS_KEY, JSON.stringify(plans));
+  } catch {
+    /* quota / disabled storage — ignore */
+  }
+}
+
+function _hashScope(scopedRows, scopedMeta) {
+  // Cheap fingerprint to dedupe identical Discovery→Plan handoffs.
+  const ids = (scopedRows || []).map(r => r.arn || `${r.service}:${r.id}`).sort().join(",");
+  return `${scopedMeta?.account_id || ""}|${scopedMeta?.region || ""}|${ids}`;
+}
+
+const PLAN_STATUS_META = {
+  selected: { color: "#d97706", label: "🟡 Selected",  hint: "Discovery 에서 선택만 됨 — 매핑 필요" },
+  mapped:   { color: "#3b82f6", label: "🟢 Mapped",    hint: "리소스 매핑 완료 — Plan 수립 가능" },
+  ready:    { color: "#16a34a", label: "✓ 수립 완료",  hint: "Terraform 모듈 + 스크립트 생성됨, Deploy 가능" },
+};
+
+function _formatRelative(ts) {
+  if (!ts) return "?";
+  const diff = Math.max(0, Date.now() / 1000 - ts);
+  if (diff < 60)    return `${Math.floor(diff)}초 전`;
+  if (diff < 3600)  return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  return `${Math.floor(diff / 86400)}일 전`;
+}
+
+function RowActionMenu({ items }) {
+  // items = [{label, onClick, danger?, disabled?}]
+  const [open, setOpen] = useState(false);
+  const [pos, setPos]   = useState(null);    // {top, left} for portal-style placement
+  const btnRef = useRef(null);
+  const popRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => {
+      if (popRef.current?.contains(e.target)) return;
+      if (btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onScroll = () => setOpen(false);   // close on any scroll/resize
+    document.addEventListener("mousedown", onClick);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) { setOpen(true); return; }
+    const menuH = 36 * items.length + 8;
+    const menuW = 160;
+    // Flip up if not enough room below
+    const top = (r.bottom + menuH > window.innerHeight - 8)
+      ? Math.max(8, r.top - menuH - 4)
+      : r.bottom + 4;
+    const left = Math.max(8, Math.min(r.right - menuW, window.innerWidth - menuW - 8));
+    setPos({ top, left });
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <button ref={btnRef} type="button" onClick={toggle}
+        title="액션"
+        style={{
+          minHeight: 28, minWidth: 32, padding: "0 6px",
+          background: open ? "var(--color-bg)" : "none",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-sm)",
+          cursor: "pointer",
+          fontSize: "1rem", lineHeight: 1, color: "var(--color-text)",
+        }}>
+        ⋯
+      </button>
+      {open && pos && (
+        <div ref={popRef} style={{
+          position: "fixed", top: pos.top, left: pos.left, zIndex: 1000,
+          minWidth: 160,
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-sm)",
+          boxShadow: "0 6px 18px rgba(0,0,0,0.35)",
+          overflow: "hidden",
+        }}>
+          {items.map((it, i) => (
+            <button key={i} type="button"
+              onClick={() => { setOpen(false); if (!it.disabled) it.onClick(); }}
+              disabled={it.disabled}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                padding: "8px 12px", border: "none", background: "transparent",
+                color: it.disabled ? "var(--color-text-light)" : (it.danger ? "#dc2626" : "var(--color-text)"),
+                fontSize: "0.8rem",
+                cursor: it.disabled ? "not-allowed" : "pointer",
+              }}
+              onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = "var(--color-bg)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function PlansListView({
+  inProgressPlan,            // {status, scopedRows, scopedMeta, azureRegion, mappingComplete}
+  pastPlans,                 // [{run_id, has_terraform, terraform_file_count, ...}]
+  loadingPast,
+  onOpenInProgress,
+  onOpenPast,
+  onDeletePast,              // (runId or [runIds]) => void
+  onClearInProgress,         // () => void  (clear React scope; can be undefined)
+  onRefresh,
+  onGoToDiscover,
+}) {
+  const hasInProgress = !!inProgressPlan && (inProgressPlan.scopedRows || []).length > 0;
+
+  // Multi-select for bulk delete
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // Drop selections that no longer exist after a refresh
+  useEffect(() => {
+    setSelectedIds(prev => {
+      const valid = new Set((pastPlans || []).map(p => p.run_id));
+      valid.add(IN_PROGRESS_ID);
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (valid.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [pastPlans]);
+
+  const toggle = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const allItemIds = useMemo(() => {
+    const ids = (pastPlans || []).map(p => p.run_id);
+    if (hasInProgress) ids.unshift(IN_PROGRESS_ID);
+    return ids;
+  }, [pastPlans, hasInProgress]);
+
+  const toggleAll = () => {
+    setSelectedIds(prev => {
+      if (prev.size === allItemIds.length && allItemIds.length > 0) return new Set();
+      return new Set(allItemIds);
+    });
+  };
+  const allChecked = allItemIds.length > 0 && selectedIds.size === allItemIds.length;
+  const someChecked = selectedIds.size > 0 && !allChecked;
+
+  const pagination = usePagination(pastPlans || [], 10);
+  const { pageItems: visiblePastPlans } = pagination;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <strong style={{ fontSize: "0.95rem" }}>📋 마이그레이션 Plan 목록</strong>
+        <span style={{ color: "var(--color-text-light)", fontSize: "0.78rem" }}>
+          {loadingPast ? "로드 중…" : `${(hasInProgress ? 1 : 0) + (pastPlans?.length || 0)}건`}
+        </span>
+        <button type="button" onClick={onRefresh}
+          style={{
+            background: "none", border: "none",
+            color: "var(--color-text-light)", cursor: "pointer", fontSize: "0.78rem",
+          }}>
+          ↻ 새로고침
+        </button>
+        <div style={{ flex: 1 }} />
+        {selectedIds.size > 0 && (
+          <button type="button"
+            onClick={() => onDeletePast(Array.from(selectedIds))}
+            style={{
+              minHeight: 32, padding: "0 14px", fontSize: "0.8rem",
+              background: "#dc2626", color: "#fff", border: "1px solid #dc2626",
+              borderRadius: "var(--radius-sm)", cursor: "pointer", fontWeight: 600,
+            }}>
+            🗑 선택 {selectedIds.size}개 삭제
+          </button>
+        )}
+        {!hasInProgress && (
+          <button type="button" onClick={onGoToDiscover}
+            className="tab action-btn action-btn--secondary"
+            style={{ minHeight: 34, padding: "0 16px" }}>
+            ➜ Discover 단계로 이동 (리소스 선택)
+          </button>
+        )}
+      </div>
+
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 0,
+        border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)",
+        overflow: "visible",   // dropdown menus from rows must render outside
+      }}>
+        {/* Header row */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
+          gap: 8, padding: "8px 14px",
+          background: "var(--color-bg)",
+          borderBottom: "1px solid var(--color-border)",
+          fontSize: "0.74rem", fontWeight: 700, color: "var(--color-text-light)",
+        }}>
+          <span style={{ display: "flex", alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={allChecked}
+              ref={el => { if (el) el.indeterminate = someChecked; }}
+              onChange={toggleAll}
+              disabled={(pastPlans || []).length === 0}
+              title="모든 과거 Plan 선택/해제"
+            />
+          </span>
+          <span>상태</span>
+          <span>Plan / Run ID</span>
+          <span>소스 / 대상</span>
+          <span>리소스</span>
+          <span>생성</span>
+          <span style={{ textAlign: "center" }}>액션</span>
+        </div>
+
+        {/* In-progress plan (current scope) */}
+        {hasInProgress && (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
+            gap: 8, padding: "10px 14px",
+            background: "rgba(59,130,246,0.04)",
+            borderBottom: "1px solid var(--color-border)",
+            fontSize: "0.8rem", alignItems: "center",
+          }}>
+            <span style={{ display: "flex", alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={selectedIds.has(IN_PROGRESS_ID)}
+                onChange={() => toggle(IN_PROGRESS_ID)}
+                title="작업 중인 Plan 선택"
+              />
+            </span>
+            <span title={PLAN_STATUS_META[inProgressPlan.status].hint} style={{
+              fontSize: "0.72rem", fontWeight: 700,
+              color: PLAN_STATUS_META[inProgressPlan.status].color,
+            }}>
+              {PLAN_STATUS_META[inProgressPlan.status].label}
+            </span>
+            <span>
+              <strong>(작업 중)</strong>
+              <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)" }}>
+                저장 안됨 — 새로고침 시 사라질 수 있음
+              </div>
+            </span>
+            <span style={{ fontSize: "0.74rem" }}>
+              {inProgressPlan.scopedMeta?.account_id || "?"} / {inProgressPlan.scopedMeta?.region || "?"}
+              <div style={{ color: "var(--color-text-light)" }}>→ {inProgressPlan.azureRegion}</div>
+            </span>
+            <span style={{ fontSize: "0.74rem" }}>
+              {inProgressPlan.scopedRows.length}개
+            </span>
+            <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+              지금
+            </span>
+            <RowActionMenu items={[
+              { label: "▶ 열기", onClick: onOpenInProgress },
+              { label: "🗑 비우기", danger: true,
+                onClick: () => onClearInProgress?.(),
+                disabled: !onClearInProgress },
+            ]} />
+          </div>
+        )}
+
+        {/* Past plans from disk (paginated) */}
+        {!loadingPast && visiblePastPlans.map(p => {
+          const checked = selectedIds.has(p.run_id);
+          return (
+            <div key={p.run_id} style={{
+              display: "grid",
+              gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
+              gap: 8, padding: "10px 14px",
+              borderBottom: "1px solid var(--color-border)",
+              background: checked ? "rgba(220,38,38,0.04)" : "transparent",
+              fontSize: "0.8rem", alignItems: "center",
+            }}>
+              <span style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(p.run_id)}
+                  title="선택해서 한꺼번에 삭제"
+                />
+              </span>
+              <span style={{
+                fontSize: "0.72rem", fontWeight: 700,
+                color: PLAN_STATUS_META.ready.color,
+              }}>
+                {PLAN_STATUS_META.ready.label}
+              </span>
+              <code style={{ fontSize: "0.74rem", color: "var(--color-text)" }}>
+                {p.run_id}
+              </code>
+              <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+                —
+              </span>
+              <span style={{ fontSize: "0.74rem" }}>
+                {p.terraform_file_count ? `tf ${p.terraform_file_count}` : "—"}
+              </span>
+              <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+                {p.created_at ? _formatRelative(p.created_at) : "—"}
+              </span>
+              <RowActionMenu items={[
+                { label: "📂 보기", onClick: () => onOpenPast(p.run_id) },
+                { label: "🗑 삭제", danger: true, onClick: () => onDeletePast(p.run_id) },
+              ]} />
+            </div>
+          );
+        })}
+
+        {!loadingPast && !hasInProgress && (pastPlans || []).length === 0 && (
+          <div style={{
+            padding: "24px 16px", textAlign: "center",
+            fontSize: "0.85rem", color: "var(--color-text-light)",
+          }}>
+            아직 Plan 이 없습니다. Discover 단계에서 리소스를 선택해서 시작하세요.
+          </div>
+        )}
+      </div>
+
+      {(pastPlans || []).length > 10 && (
+        <div style={{ marginTop: 10 }}>
+          <Pagination {...pagination} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function MigrationPage({
   awsSpec,
   setAwsSpec,
@@ -1157,30 +2342,194 @@ function MigrationPage({
   setGoals,
   scopedRows,
   scopedMeta,
+  architecture,
   onGoToDiscover,
   mapping,
+  onPlanCompleted,
+  targetSubscriptionId = "",
 }) {
+  // viewMode: "list" (default) | "detail"
+  // selectedRunId: when set, detail view shows that past plan (read-only); else
+  // the in-progress (current scope) plan workflow.
+  const [viewMode, setViewMode] = useState("list");
+  const [selectedRunId, setSelectedRunId] = useState(null);
+
+  const [pastPlans, setPastPlans] = useState([]);
+  const [loadingPast, setLoadingPast] = useState(false);
+
+  // Confirm-delete modal state (replaces native browser confirm())
+  const [pendingDelete, setPendingDelete] = useState(null);   // run_id or null
+  const [deleteBusy, setDeleteBusy]       = useState(false);
+  const [deleteError, setDeleteError]     = useState(null);
+
+  const refreshPastPlans = useCallback(async () => {
+    setLoadingPast(true);
+    try {
+      const res = await fetchMigrationOutputs();
+      setPastPlans(res.runs || []);
+    } catch {
+      setPastPlans([]);
+    } finally {
+      setLoadingPast(false);
+    }
+  }, []);
+
+  useEffect(() => { refreshPastPlans(); }, [refreshPastPlans]);
+
+  // In-progress plan derived from current React state.
+  const inProgressPlan = useMemo(() => {
+    if (!scopedRows || scopedRows.length === 0) return null;
+    return {
+      scopedRows,
+      scopedMeta,
+      azureRegion,
+      status: mapping?.mappingComplete ? "mapped" : "selected",
+    };
+  }, [scopedRows, scopedMeta, azureRegion, mapping?.mappingComplete]);
+
   return (
     <section className="page-section">
-      <h2 className="page-title">🧭 Plan</h2>
-      <p className="page-desc">
-        Discover &amp; Select에서 고른 범위와 Target region을 확인한 뒤 제출하세요. 에이전트가
-        구조화된 마이그레이션 계획과 바로 쓸 수 있는 Azure Terraform 모듈을 함께 반환하며,
-        결과는 <code>backend/outputs/</code>에 저장됩니다.
-      </p>
+      {/* ─── Header ─── */}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: "0 0 4px", fontSize: "1.2rem", fontWeight: 700 }}>
+          마이그레이션 계획
+        </h2>
+        <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--color-text-light)" }}>
+          Discover에서 선택한 리소스를 Azure로 매핑하고, Terraform 모듈과 데이터 이전 스크립트를 생성합니다.
+        </p>
+      </div>
 
-      <RunMigrationForm
-        awsSpec={awsSpec}
-        setAwsSpec={setAwsSpec}
-        azureRegion={azureRegion}
-        setAzureRegion={setAzureRegion}
-        goals={goals}
-        setGoals={setGoals}
-        scopedRows={scopedRows}
-        scopedMeta={scopedMeta}
-        onGoToDiscover={onGoToDiscover}
-        mapping={mapping}
-      />
+      {viewMode === "list" && (
+        <PlansListView
+          inProgressPlan={inProgressPlan}
+          pastPlans={pastPlans}
+          loadingPast={loadingPast}
+          onRefresh={refreshPastPlans}
+          onGoToDiscover={onGoToDiscover}
+          onOpenInProgress={() => {
+            setSelectedRunId(null);
+            setViewMode("detail");
+          }}
+          onOpenPast={(runId) => {
+            setSelectedRunId(runId);
+            setViewMode("detail");
+          }}
+          onDeletePast={(runIds) => {
+            // Accept either single id or an array (for bulk delete).
+            // The sentinel IN_PROGRESS_ID is mixed in when the in-progress
+            // row is selected — we surface it in the modal but it can't be
+            // sent to the backend (it lives only in React state).
+            const ids = Array.isArray(runIds) ? runIds : [runIds];
+            setPendingDelete(ids);
+            setDeleteError(null);
+          }}
+          onClearInProgress={undefined /* TODO: lift to App.jsx — clears scopedRows */}
+        />
+      )}
+
+      {pendingDelete && pendingDelete.length > 0 && (() => {
+        const inProgressSelected = pendingDelete.includes(IN_PROGRESS_ID);
+        const realIds = pendingDelete.filter(id => id !== IN_PROGRESS_ID);
+        const totalCount = pendingDelete.length;
+        return (
+          <ConfirmModal
+            title={totalCount === 1 ? "Plan 삭제" : `${totalCount}개 Plan 삭제`}
+            danger
+            busy={deleteBusy}
+            confirmLabel={totalCount === 1 ? "삭제" : `${totalCount}개 모두 삭제`}
+            body={
+              <>
+                {inProgressSelected && (
+                  <div style={{
+                    marginBottom: 10, padding: "6px 10px", fontSize: "0.78rem",
+                    background: "rgba(217,119,6,0.08)", border: "1px solid #d97706",
+                    borderRadius: "var(--radius-sm)",
+                  }}>
+                    ⚠ 작업 중(in-progress) Plan 도 선택됨 — 디스크에 저장된 적이 없어 일반
+                    삭제 대상이 아닙니다. 디스크 Plan만 삭제되고, 작업 중 Plan 은 Discover
+                    단계에서 직접 비워주세요.
+                  </div>
+                )}
+                {realIds.length > 0 && (
+                  <>
+                    <div style={{ marginBottom: 8 }}>
+                      다음 Plan{realIds.length > 1 ? "들" : ""}을 디스크에서 삭제합니다:
+                    </div>
+                    <ul style={{ margin: "6px 0 10px 18px", padding: 0, fontFamily: "monospace", fontSize: "0.78rem" }}>
+                      {realIds.map(id => <li key={id}>{id}</li>)}
+                    </ul>
+                  </>
+                )}
+                <div style={{ fontSize: "0.78rem", color: "var(--color-text-light)", lineHeight: 1.5 }}>
+                  • terraform 모듈 / 데이터 이전 스크립트 / 로그 모두 제거됩니다.<br/>
+                  • 이 Plan 으로 이미 시작한 Deploy 는 그대로 유지됩니다.
+                </div>
+                {deleteError && (
+                  <div className="form-error" style={{ marginTop: 10 }}>
+                    {deleteError}
+                  </div>
+                )}
+              </>
+            }
+            onCancel={() => { setPendingDelete(null); setDeleteError(null); }}
+            onConfirm={async () => {
+              setDeleteBusy(true); setDeleteError(null);
+              const failed = [];
+              for (const id of realIds) {
+                try { await deletePlanOutput(id); }
+                catch (e) { failed.push(`${id}: ${e.message || e}`); }
+              }
+              await refreshPastPlans();
+              setDeleteBusy(false);
+              if (failed.length === 0) {
+                setPendingDelete(null);
+              } else {
+                setDeleteError(`일부 삭제 실패:\n${failed.join("\n")}`);
+              }
+            }}
+          />
+        );
+      })()}
+
+      {viewMode === "detail" && (
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            <button type="button"
+              onClick={() => { setViewMode("list"); setSelectedRunId(null); refreshPastPlans(); }}
+              style={{
+                background: "none", border: "1px solid var(--color-border)",
+                color: "var(--color-text-light)", borderRadius: "var(--radius-sm)",
+                padding: "5px 14px", fontSize: "0.78rem", cursor: "pointer",
+              }}>
+              ← Plan 목록
+            </button>
+            {selectedRunId && (
+              <span style={{ marginLeft: 10, fontSize: "0.82rem", color: "var(--color-text-light)" }}>
+                Plan: <code>{selectedRunId}</code> (보기 모드 — mapping/생성은 새 작업에서)
+              </span>
+            )}
+          </div>
+          <RunMigrationForm
+            awsSpec={awsSpec}
+            setAwsSpec={setAwsSpec}
+            azureRegion={azureRegion}
+            setAzureRegion={setAzureRegion}
+            goals={goals}
+            setGoals={setGoals}
+            scopedRows={scopedRows}
+            scopedMeta={scopedMeta}
+            architecture={architecture}
+            onGoToDiscover={onGoToDiscover}
+            mapping={mapping}
+            onPlanCompleted={() => {
+              onPlanCompleted?.();
+              refreshPastPlans();
+            }}
+            targetSubscriptionId={targetSubscriptionId}
+            preloadedRunId={selectedRunId}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -1194,8 +2543,12 @@ function RunMigrationForm({
   setGoals,
   scopedRows,
   scopedMeta,
+  architecture,
   onGoToDiscover,
   mapping,
+  onPlanCompleted,
+  targetSubscriptionId = "",
+  preloadedRunId = null,
 }) {
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
@@ -1210,21 +2563,53 @@ function RunMigrationForm({
         if (res.status === "pending" || res.status === "running") {
           setTimeout(pollStatus, 2000);
         }
+        if (res.status === "completed") {
+          onPlanCompleted?.();
+        }
       })
       .catch(() => setError("상태 갱신에 실패했습니다"));
-  }, [jobId]);
+  }, [jobId, onPlanCompleted]);
 
   useEffect(() => {
     if (jobId) pollStatus();
   }, [jobId, pollStatus]);
 
+  // Preloaded view-only mode: when the user clicks "📂 보기" on a past plan
+  // in the list, fetch its persisted output and render it as a completed run.
   useEffect(() => {
+    if (!preloadedRunId) return;
+    setJobId(null); setError(null); setPrepMessage(null);
+    import("../api/apiClient").then(({ fetchMigrationOutput }) =>
+      fetchMigrationOutput(preloadedRunId)
+    ).then((data) => {
+      // Wrap so PlanResultView can consume the same shape as live status.
+      // Carry the persisted mappings + architecture through so the detail
+      // view can render the mapping comparison + topology even though no
+      // live React state is available.
+      setStatus({
+        status: "completed",
+        result: {
+          ...data,
+          json_data: data.json_data,
+          execution_log: data.execution_log,
+          artifacts: { run_id: preloadedRunId },
+          persisted_mappings: data.azure_mappings || [],
+          persisted_architecture: data.architecture || null,
+        },
+      });
+    }).catch((e) => setError(`Plan 로드 실패: ${e.message || e}`));
+  }, [preloadedRunId]);
+
+  // Skip the "active job" auto-resume in preloaded mode (we already loaded
+  // the past plan's static output).
+  useEffect(() => {
+    if (preloadedRunId) return;
     getActiveMigrationJob()
       .then((res) => {
         if (res.job_id) setJobId(res.job_id);
       })
       .catch(() => {});
-  }, []);
+  }, [preloadedRunId]);
 
   const isRunning =
     !!jobId && status?.status !== "completed" && status?.status !== "failed";
@@ -1265,7 +2650,9 @@ function RunMigrationForm({
     try {
       const res = await startMigrationPlan({
         aws_resource_spec: awsSpec.trim(),
+        architecture,                          // ← v2 pipeline 입력 (있으면 자동 v2)
         target_azure_region: azureRegion.trim() || "eastus",
+        target_subscription_id: targetSubscriptionId,
         migration_goals: goals.trim(),
         azure_mappings: mappingsForPlanner,
       });
@@ -1276,103 +2663,120 @@ function RunMigrationForm({
   };
 
   return (
-    <div className="run-analysis-form">
-      <div className="form-section">
-        <label>AWS resources and scope</label>
+    <div>
+      {/* ─── 리소스 매핑 Panel ─── */}
+      <div style={{
+        padding: "16px 20px",
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
+        borderRadius: "var(--radius-sm)",
+        marginBottom: 16,
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginBottom: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", fontWeight: 700, color: "var(--color-text)" }}>
+            <span style={{ color: "#00d4aa" }}>●</span> 리소스 매핑
+            <span style={{ fontWeight: 400, fontSize: "0.78rem", color: "var(--color-text-light)" }}>
+              — AWS → Azure 대상 매핑
+            </span>
+          </div>
+        </div>
+
         <ScopeSummaryTable
           rows={scopedRows}
           meta={scopedMeta}
           mapping={mapping}
+          architecture={architecture}
           onGoToDiscover={onGoToDiscover}
           azureRegion={azureRegion}
           setAzureRegion={setAzureRegion}
         />
-        <p
-          style={{
-            marginTop: 8,
-            fontSize: "0.78rem",
-            color: "var(--color-text-light)",
-          }}
-        >
+        <p style={{
+          marginTop: 8, marginBottom: 0,
+          fontSize: "0.78rem", color: "var(--color-text-light)",
+        }}>
           위 내용은 사전 Azure Mapping 결과입니다. Plan 시 결과가 달라질 수 있습니다.
         </p>
       </div>
 
-      {error && <div className="form-error">{error}</div>}
+      {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
 
-      <div className="action-bar">
-        <button
-          className="run-btn action-btn"
-          type="button"
-          onClick={handleRun}
-          disabled={isRunning || mapping.loading || !awsSpec.trim()}
-        >
-          {mapping.loading && !isRunning ? (
-            <>
-              <span className="spinner" />
-              Mapping Azure targets...
-            </>
-          ) : isRunning ? (
-            <>
-              <span className="spinner" />
-              {status?.status === "running" ? "Planning..." : "Starting..."}
-            </>
-          ) : (
-            <>🚀 Plan</>
-          )}
-        </button>
-        {prepMessage && !isRunning && (
-          <span
-            style={{
-              marginLeft: 12,
-              fontSize: "0.82rem",
-              color: "var(--color-text-light)",
-            }}
-          >
-            {prepMessage}
-          </span>
-        )}
+      {/* ─── Plan 실행 Panel ─── (이미 수립 완료된 plan 보기 모드에선 숨김) */}
+      {!preloadedRunId && (
+      <div style={{
+        padding: "16px 20px",
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
+        borderRadius: "var(--radius-sm)",
+        marginBottom: 16,
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginBottom: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", fontWeight: 700, color: "var(--color-text)" }}>
+            <span style={{ color: "#60a5fa" }}>●</span> Plan 수립
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {prepMessage && !isRunning && (
+              <span style={{ fontSize: "0.78rem", color: "var(--color-text-light)" }}>
+                {prepMessage}
+              </span>
+            )}
+            <button
+              className="run-btn action-btn"
+              type="button"
+              onClick={handleRun}
+              disabled={isRunning || mapping.loading || !awsSpec.trim()}
+              style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}
+            >
+              {mapping.loading && !isRunning ? (
+                <><span className="spinner" />Mapping…</>
+              ) : isRunning ? (
+                <><span className="spinner" />{status?.status === "running" ? "수립 중…" : "시작 중…"}</>
+              ) : (
+                <>🚀 Plan 수립</>
+              )}
+            </button>
+          </div>
+        </div>
+
       </div>
-
-      {/* Surface the raw spec (useful for debugging what's sent to the LLM)
-          behind a collapsed details — keeps the page clean by default. */}
-      {awsSpec?.trim() && (
-        <details style={{ marginTop: 12 }}>
-          <summary
-            style={{
-              cursor: "pointer",
-              color: "var(--color-text-light)",
-              fontSize: "0.82rem",
-            }}
-          >
-            Planner에 보낸 원문 스펙 보기
-          </summary>
-          <pre
-            style={{
-              marginTop: 8,
-              padding: 12,
-              background: "var(--color-surface)",
-              border: "1px solid var(--color-border)",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.78rem",
-              whiteSpace: "pre-wrap",
-              maxHeight: 240,
-              overflow: "auto",
-            }}
-          >
-            {awsSpec}
-          </pre>
-        </details>
       )}
 
+      {/* ─── Plan 결과 Panel — Azure 토폴로지 + Terraform + 데이터 이전 스크립트 ─── */}
       {status?.status === "completed" && status?.result && (
-        <PlanResultView
-          result={status.result}
-          runId={status.result?.artifacts?.run_id}
-        />
+        <div style={{
+          padding: "16px 20px",
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-sm)",
+          marginBottom: 16,
+        }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, marginBottom: 14,
+            fontSize: "0.8rem", fontWeight: 700, color: "var(--color-text)",
+          }}>
+            <span style={{ color: "#16a34a" }}>●</span> Plan 결과
+          </div>
+          <PlanResultView
+            result={status.result}
+            runId={status.result?.artifacts?.run_id}
+            architecture={status.result?.persisted_architecture || architecture}
+            mappings={status.result?.persisted_mappings?.length
+              ? status.result.persisted_mappings
+              : (mapping?.mappings || [])}
+            scopedRows={scopedRows}
+            azureRegion={azureRegion}
+            showExecutionLog
+          />
+        </div>
       )}
+
       {status?.status === "failed" && (
-        <div className="form-error">
+        <div className="form-error" style={{ marginBottom: 16 }}>
           <strong>Planning failed:</strong> {status.error}
         </div>
       )}

@@ -12,7 +12,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
@@ -86,6 +86,119 @@ _deploys: Dict[str, Dict[str, Any]] = {}
 _deploys_lock = threading.Lock()
 
 
+def _v1_to_filesystem(output_dir: Path, result: Dict[str, Any]) -> Tuple[Optional[Path], Optional[Path], List[str]]:
+    """Persist a v1 (single-LLM) result to disk and return path metadata."""
+    summary_path = output_dir / "agent_output.md"
+    summary_path.write_text(result.get("final_output", "<no final_output>"), encoding="utf-8")
+
+    log_path = None
+    if execution_log := result.get("execution_log"):
+        log_path = output_dir / "execution_log.txt"
+        log_path.write_text("\n\n---\n\n".join(str(x) for x in execution_log), encoding="utf-8")
+
+    tf_files_written: List[str] = []
+    json_path = None
+    if json_data := result.get("json_data"):
+        json_path = output_dir / "agent_output.json"
+        json_path.write_text(json.dumps(json_data, indent=2, default=str), encoding="utf-8")
+        tf_files_written = _write_terraform_artifacts(output_dir, json_data.get("terraform") or [])
+
+    return summary_path, log_path, tf_files_written
+
+
+def _v2_to_filesystem(output_dir: Path, plan: Dict[str, Any]) -> Tuple[Path, Path, List[str]]:
+    """Persist a v2 (multi-module) plan to disk.
+
+    Layout::
+        output_dir/
+          agent_output.md            ← human-readable summary
+          agent_output.json          ← full plan as JSON
+          execution_log.txt          ← pipeline + validation log
+          terraform/                 ← root + modules, ready to apply
+            providers.tf
+            main.tf
+            variables.tf
+            outputs.tf
+            README.md
+            modules/
+              networking/
+              compute/
+              database/
+              storage/
+    """
+    # Markdown summary
+    md_lines: List[str] = [
+        "## Summary",
+        plan.get("summary") or "",
+        "",
+        "## Assessment",
+        plan.get("assessment") or "",
+        "",
+        "## Migration waves",
+    ]
+    for w in plan.get("waves") or []:
+        md_lines.append(f"### {w.get('order')}. {w.get('name')}")
+        md_lines.append(w.get("description") or "")
+        if w.get("resources"):
+            md_lines.append(f"- Resources: {', '.join(w['resources'])}")
+        if w.get("blockers"):
+            md_lines.append(f"- Blockers: {', '.join(w['blockers'])}")
+        md_lines.append("")
+    if plan.get("risks"):
+        md_lines.append("## Risks")
+        for r in plan["risks"]:
+            md_lines.append(f"- **{r.get('category')}**: {r.get('detail')}")
+            if r.get("mitigation"):
+                md_lines.append(f"  - Mitigation: {r['mitigation']}")
+    if plan.get("open_questions"):
+        md_lines.append("\n## Open questions")
+        for q in plan["open_questions"]:
+            md_lines.append(f"- {q}")
+
+    summary_path = output_dir / "agent_output.md"
+    summary_path.write_text("\n".join(md_lines).strip() + "\n", encoding="utf-8")
+
+    json_path = output_dir / "agent_output.json"
+    json_path.write_text(json.dumps(plan, indent=2, default=str), encoding="utf-8")
+
+    log_path = output_dir / "execution_log.txt"
+    log_lines = list(plan.get("pipeline_log") or []) + ["", "── Validation ──"] + list(plan.get("validation_log") or [])
+    log_path.write_text("\n".join(log_lines), encoding="utf-8")
+
+    # Write Terraform: root + modules/<name>/
+    tf_root = output_dir / "terraform"
+    tf_root.mkdir(parents=True, exist_ok=True)
+    written: List[str] = []
+
+    root_module = plan.get("root_module") or {}
+    for filename, content in (root_module.get("files") or {}).items():
+        safe = _sanitize_tf_filename(filename)
+        if not safe:
+            continue
+        (tf_root / safe).write_text(content, encoding="utf-8")
+        written.append(safe)
+
+    modules_dir = tf_root / "modules"
+    modules_dir.mkdir(exist_ok=True)
+    for mod in (plan.get("terraform_modules") or []):
+        mod_name = mod.get("name")
+        if not mod_name or mod_name == "root":
+            continue
+        # Validate module name to avoid path traversal
+        if not re.fullmatch(r"[a-z0-9_-]+", mod_name):
+            continue
+        sub = modules_dir / mod_name
+        sub.mkdir(parents=True, exist_ok=True)
+        for filename, content in (mod.get("files") or {}).items():
+            safe = _sanitize_tf_filename(filename)
+            if not safe:
+                continue
+            (sub / safe).write_text(content, encoding="utf-8")
+            written.append(f"modules/{mod_name}/{safe}")
+
+    return summary_path, log_path, written
+
+
 def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
     import os
 
@@ -93,13 +206,119 @@ def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
         _jobs[job_id]["status"] = "running"
 
     try:
-        MigrationAgent = _get_agent_class()
         endpoint = params.get("endpoint") or os.getenv("AZURE_OPENAI_ENDPOINT")
         llm_deployment = params.get("llm_deployment") or os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-
         if not endpoint:
             raise ValueError("AZURE_OPENAI_ENDPOINT is required")
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = OUTPUTS_ROOT / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Route: v2 if architecture provided, else fall back to v1 ───
+        architecture = params.get("architecture")
+        if architecture and isinstance(architecture, dict) and architecture.get("networking"):
+            from app.agent_module.v2 import MigrationContext, run_migration_v2
+
+            ctx = MigrationContext(
+                architecture=architecture,
+                mappings=params.get("azure_mappings") or [],
+                target_region=params.get("target_azure_region") or "eastus",
+                goals=params.get("migration_goals") or "",
+                target_subscription_id=params.get("target_subscription_id") or "",
+            )
+            plan_v2 = run_migration_v2(
+                ctx,
+                llm_deployment=llm_deployment,
+                azure_openai_endpoint=endpoint,
+            )
+
+            summary_path, log_path, tf_files = _v2_to_filesystem(output_dir, plan_v2)
+
+            # Persist the input mappings + architecture too so the Plan
+            # detail view can re-display the mapping comparison table later
+            # without needing the React state that was used at run time.
+            try:
+                (output_dir / "azure_mappings.json").write_text(
+                    json.dumps(params.get("azure_mappings") or [], indent=2, default=str, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                (output_dir / "architecture.json").write_text(
+                    json.dumps(params.get("architecture") or {}, indent=2, default=str, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                # Non-fatal; main plan output is what matters.
+                pass
+
+            # Build a compatibility shape so the existing frontend keeps working.
+            # Include BOTH the root module files AND every sub-module's files,
+            # prefixed with `modules/<module_name>/`, so the file-browser viewer
+            # can render the full tree (root + modules/networking, etc.).
+            compat_terraform = []
+            root_files = (plan_v2.get("root_module") or {}).get("files") or {}
+            for fn, ct in root_files.items():
+                compat_terraform.append({"filename": fn, "content": ct, "description": ""})
+            for mod in (plan_v2.get("terraform_modules") or []):
+                m_name = mod.get("name") or "module"
+                for fn, ct in (mod.get("files") or {}).items():
+                    compat_terraform.append({
+                        "filename": f"modules/{m_name}/{fn}",
+                        "content":  ct,
+                        "description": "",
+                    })
+            md_text = summary_path.read_text(encoding="utf-8")
+
+            final_result = {
+                "final_output": md_text,
+                "json_data": {
+                    "summary":         plan_v2.get("summary"),
+                    "assessment":      plan_v2.get("assessment"),
+                    "steps":           [
+                        {
+                            "phase":           w.get("name"),
+                            "description":     w.get("description"),
+                            "aws_components":  [],
+                            "azure_targets":   w.get("resources") or [],
+                            "notes":           ", ".join(w.get("blockers") or []),
+                        }
+                        for w in (plan_v2.get("waves") or [])
+                    ],
+                    "risks":           plan_v2.get("risks") or [],
+                    "open_questions":  plan_v2.get("open_questions") or [],
+                    "terraform":       compat_terraform,
+                    "v2":              plan_v2,   # full v2 plan also surfaced
+                },
+                "execution_log":     plan_v2.get("pipeline_log") or [],
+                "validation_passed": plan_v2.get("validation_passed", False),
+                "validation_log":    plan_v2.get("validation_log") or [],
+            }
+            with _jobs_lock:
+                _jobs[job_id].update({
+                    "status": "completed",
+                    "result": {
+                        "final_output":     final_result["final_output"],
+                        "json_data":        final_result["json_data"],
+                        "execution_log":    final_result["execution_log"],
+                        "validation_passed": final_result["validation_passed"],
+                        "validation_log":    final_result["validation_log"],
+                        "pipeline":         "v2",
+                        "artifacts": {
+                            "output_dir":         str(output_dir),
+                            "summary_path":       str(summary_path),
+                            "execution_log_path": str(log_path) if log_path else "",
+                            "json_path":          str(output_dir / "agent_output.json"),
+                            "run_id":             timestamp,
+                            "terraform_dir":      str(output_dir / "terraform") if tf_files else "",
+                            "terraform_files":    tf_files,
+                        },
+                    },
+                    "completed_at": time.time(),
+                })
+            return
+
+        # ── Fallback: v1 (legacy single-LLM) ────────────────────────
+        MigrationAgent = _get_agent_class()
         agent = MigrationAgent(
             llm_deployment=llm_deployment,
             azure_openai_endpoint=endpoint,
@@ -111,40 +330,24 @@ def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
             output_format=params.get("output_format", "json"),
             azure_mappings=params.get("azure_mappings") or None,
         )
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = OUTPUTS_ROOT / timestamp
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        summary_path = output_dir / "agent_output.md"
-        summary_path.write_text(result.get("final_output", "<no final_output>"), encoding="utf-8")
-
-        log_path = json_path = None
-        if execution_log := result.get("execution_log"):
-            log_path = output_dir / "execution_log.txt"
-            log_path.write_text("\n\n---\n\n".join(str(x) for x in execution_log), encoding="utf-8")
-
-        tf_files_written: List[str] = []
-        if json_data := result.get("json_data"):
-            json_path = output_dir / "agent_output.json"
-            json_path.write_text(json.dumps(json_data, indent=2, default=str), encoding="utf-8")
-            tf_files_written = _write_terraform_artifacts(output_dir, json_data.get("terraform") or [])
+        summary_path, log_path, tf_files = _v1_to_filesystem(output_dir, result)
 
         with _jobs_lock:
             _jobs[job_id].update({
                 "status": "completed",
                 "result": {
-                    "final_output": result.get("final_output"),
-                    "json_data": result.get("json_data"),
+                    "final_output":  result.get("final_output"),
+                    "json_data":     result.get("json_data"),
                     "execution_log": result.get("execution_log"),
+                    "pipeline":      "v1",
                     "artifacts": {
-                        "output_dir": str(output_dir),
-                        "summary_path": str(summary_path),
+                        "output_dir":         str(output_dir),
+                        "summary_path":       str(summary_path),
                         "execution_log_path": str(log_path) if log_path else "",
-                        "json_path": str(json_path) if json_path else "",
-                        "run_id": timestamp,
-                        "terraform_dir": str(output_dir / "terraform") if tf_files_written else "",
-                        "terraform_files": tf_files_written,
+                        "json_path":          str(output_dir / "agent_output.json") if (output_dir / "agent_output.json").exists() else "",
+                        "run_id":             timestamp,
+                        "terraform_dir":      str(output_dir / "terraform") if tf_files else "",
+                        "terraform_files":    tf_files,
                     },
                 },
                 "completed_at": time.time(),
@@ -163,12 +366,23 @@ router = APIRouter(prefix="/migration", tags=["migration"])
 
 @router.post("/run")
 def start_migration_plan(request: dict, background_tasks: BackgroundTasks):
-    """Start a migration planning job."""
+    """Start a migration planning job.
+
+    Pipeline selection:
+      • If ``architecture`` (Phase 1 graph) is provided  → v2 multi-step pipeline
+      • Otherwise (legacy callers)                       → v1 single-LLM agent
+    """
     import os
 
+    architecture     = request.get("architecture")
     aws_resource_spec = (request.get("aws_resource_spec") or "").strip()
-    if not aws_resource_spec:
-        raise HTTPException(status_code=400, detail="aws_resource_spec is required")
+
+    # Either architecture (v2) or aws_resource_spec (v1) must be present
+    if not architecture and not aws_resource_spec:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'architecture' (Phase 1 graph) or 'aws_resource_spec' is required",
+        )
 
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     if not endpoint:
@@ -182,16 +396,20 @@ def start_migration_plan(request: dict, background_tasks: BackgroundTasks):
         raise HTTPException(
             status_code=400, detail="azure_mappings must be a list if provided"
         )
+    if architecture is not None and not isinstance(architecture, dict):
+        raise HTTPException(status_code=400, detail="architecture must be a dict if provided")
 
     job_id = str(uuid.uuid4())
     params = {
-        "aws_resource_spec": aws_resource_spec,
-        "target_azure_region": request.get("target_azure_region", "eastus"),
-        "migration_goals": request.get("migration_goals", ""),
-        "output_format": request.get("output_format", "json"),
-        "llm_deployment": request.get("llm_deployment"),
-        "endpoint": request.get("endpoint"),
-        "azure_mappings": azure_mappings or [],
+        "aws_resource_spec":     aws_resource_spec,
+        "architecture":          architecture,
+        "target_azure_region":   request.get("target_azure_region", "eastus"),
+        "target_subscription_id": request.get("target_subscription_id", ""),
+        "migration_goals":       request.get("migration_goals", ""),
+        "output_format":         request.get("output_format", "json"),
+        "llm_deployment":        request.get("llm_deployment"),
+        "endpoint":              request.get("endpoint"),
+        "azure_mappings":        azure_mappings or [],
     }
 
     with _jobs_lock:
@@ -275,11 +493,13 @@ def map_resources_to_azure(request: dict):
         resources=raw_resources,
         target_azure_region=str(request.get("target_azure_region") or "eastus"),
         source_aws_region=str(request.get("source_aws_region") or ""),
+        target_subscription_id=str(request.get("target_subscription_id") or ""),
     )
     if result.get("error"):
         raise HTTPException(status_code=502, detail=result["error"])
     return {
         "mappings": result.get("mappings") or [],
+        "summary": result.get("summary") or {},
         "execution_log": result.get("execution_log") or [],
     }
 
@@ -318,6 +538,23 @@ def list_outputs():
     return {"runs": runs}
 
 
+@router.get("/outputs/{run_id}/variables")
+def get_run_variables(run_id: str):
+    """Parse the run's ``variables.tf`` and return variable definitions for the UI."""
+    from app.services.tfvars import parse_variables_tf
+
+    run_dir = OUTPUTS_ROOT / run_id
+    var_file = run_dir / "terraform" / "variables.tf"
+    if not var_file.is_file():
+        return {"run_id": run_id, "variables": []}
+    try:
+        content = var_file.read_text(encoding="utf-8")
+        variables = parse_variables_tf(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"variables.tf parse failed: {e}")
+    return {"run_id": run_id, "variables": variables}
+
+
 @router.get("/outputs/{run_id}")
 def get_output(run_id: str):
     run_dir = OUTPUTS_ROOT / run_id
@@ -337,10 +574,47 @@ def get_output(run_id: str):
     if log_path.exists():
         result["execution_log"] = log_path.read_text(encoding="utf-8")
 
+    # Mappings + architecture (persisted alongside the plan so the detail view
+    # can rebuild the per-resource comparison table without React state).
+    mappings_path = run_dir / "azure_mappings.json"
+    if mappings_path.exists():
+        try:
+            result["azure_mappings"] = json.loads(mappings_path.read_text(encoding="utf-8"))
+        except Exception:
+            result["azure_mappings"] = []
+    arch_path = run_dir / "architecture.json"
+    if arch_path.exists():
+        try:
+            result["architecture"] = json.loads(arch_path.read_text(encoding="utf-8"))
+        except Exception:
+            result["architecture"] = None
+
     tf_dir = run_dir / "terraform"
     if tf_dir.is_dir():
         result["terraform_files"] = sorted(p.name for p in tf_dir.iterdir() if p.is_file())
     return result
+
+
+@router.delete("/outputs/{run_id}")
+def delete_output(run_id: str):
+    """Delete a stored Plan output entirely (terraform module + JSON + logs).
+
+    Pure cleanup — does not touch any deploys that were started from this Plan
+    (their workdirs live under ``backend/.deployments/<run_id>__<deploy>/``
+    and remain intact).  The user can still finish or destroy those deploys
+    after the Plan is gone.
+    """
+    # Safety: only allow names that pass our run-id filter (timestamp-like).
+    name_re = re.compile(r"^[A-Za-z0-9_\-]+$")
+    if not name_re.fullmatch(run_id or ""):
+        raise HTTPException(status_code=400, detail="invalid run_id")
+    run_dir = (OUTPUTS_ROOT / run_id).resolve()
+    if run_dir.parent.resolve() != OUTPUTS_ROOT.resolve():
+        raise HTTPException(status_code=400, detail="path traversal blocked")
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    shutil.rmtree(run_dir)
+    return {"deleted": True, "run_id": run_id}
 
 
 @router.get("/outputs/{run_id}/terraform.zip")

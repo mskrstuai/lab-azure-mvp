@@ -1,5 +1,7 @@
 """Migration planning agent: AWS resource scope → Azure migration plan (Azure OpenAI)."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os

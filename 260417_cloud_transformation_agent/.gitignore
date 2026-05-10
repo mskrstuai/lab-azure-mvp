@@ -1,0 +1,21 @@
+# Credentials — never commit
+backend/.env
+**/.env.local
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/outputs/
+backend/.deployments/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Terraform state
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/tfplan
