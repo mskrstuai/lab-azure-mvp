@@ -459,7 +459,7 @@ function ScopeForm({ sessionId, awsResult, azureResult, onDone }) {
 
 function ReadyPanel({ awsResult, azureResult, scope, onStart, onReset }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 560, margin: "0 auto" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <SuccessCard>
         <strong>세션 준비 완료</strong>
         <div style={{ fontSize: "0.8rem", marginTop: 4, opacity: 0.9 }}>
@@ -543,7 +543,7 @@ export default function HomePage({ sessionId, setSessionId, onReady, onStart }) 
 
   return (
     <section className="page-section">
-      <div style={{ marginBottom: 24, maxWidth: 760, marginInline: "auto" }}>
+      <div style={{ marginBottom: 24 }}>
         <h2 style={{ margin: "0 0 6px", fontSize: "1.15rem", fontWeight: 700 }}>
           AWS · Azure 계정 연결
         </h2>
@@ -555,7 +555,7 @@ export default function HomePage({ sessionId, setSessionId, onReady, onStart }) 
 
       {/* Vertical toggle panels */}
       {!allDone && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 760, margin: "0 auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <StepToggleSection
             number={1}
             label="AWS"

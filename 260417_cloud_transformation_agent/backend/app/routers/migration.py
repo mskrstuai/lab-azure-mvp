@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException
 from fastapi.responses import StreamingResponse
 
 
@@ -201,9 +201,19 @@ def _v2_to_filesystem(output_dir: Path, plan: Dict[str, Any]) -> Tuple[Path, Pat
 
 def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
     import os
+    from app.services import db as plan_db
+
+    selected_plan_id = params.get("selected_plan_id")
 
     with _jobs_lock:
         _jobs[job_id]["status"] = "running"
+
+    # Mark linked savedPlan as "planning" up-front (best-effort).
+    if selected_plan_id:
+        try:
+            plan_db.update_selected_plan(selected_plan_id, status="planning")
+        except Exception:
+            pass
 
     try:
         endpoint = params.get("endpoint") or os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -315,6 +325,13 @@ def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
                     },
                     "completed_at": time.time(),
                 })
+            if selected_plan_id:
+                try:
+                    plan_db.update_selected_plan(
+                        selected_plan_id, status="ready", plan_run_id=timestamp,
+                    )
+                except Exception:
+                    pass
             return
 
         # ── Fallback: v1 (legacy single-LLM) ────────────────────────
@@ -352,6 +369,13 @@ def _run_migration_worker(job_id: str, params: Dict[str, Any]) -> None:
                 },
                 "completed_at": time.time(),
             })
+        if selected_plan_id:
+            try:
+                plan_db.update_selected_plan(
+                    selected_plan_id, status="ready", plan_run_id=timestamp,
+                )
+            except Exception:
+                pass
     except Exception as e:
         with _jobs_lock:
             _jobs[job_id].update({
@@ -410,6 +434,10 @@ def start_migration_plan(request: dict, background_tasks: BackgroundTasks):
         "llm_deployment":        request.get("llm_deployment"),
         "endpoint":              request.get("endpoint"),
         "azure_mappings":        azure_mappings or [],
+        # When the frontend opens a saved plan and triggers Plan 수립, it sends
+        # the savedPlan id so the worker can update its status to "planning"
+        # / "ready" directly — independent of the frontend's polling state.
+        "selected_plan_id":      request.get("selected_plan_id"),
     }
 
     with _jobs_lock:
@@ -524,16 +552,67 @@ def list_outputs():
     )
     runs = []
     for d in run_dirs[:50]:
-        has_md = (d / "agent_output.md").exists()
+        has_md   = (d / "agent_output.md").exists()
         has_json = (d / "agent_output.json").exists()
-        tf_dir = d / "terraform"
+        tf_dir   = d / "terraform"
         tf_files = sorted(p.name for p in tf_dir.iterdir()) if tf_dir.is_dir() else []
+
+        # Resource count + discovery mode (best-effort) from sibling files
+        resource_count = 0
+        discovery_mode = None
+        source_account = None
+        source_region  = None
+        target_region  = None
+        try:
+            mp = d / "azure_mappings.json"
+            if mp.exists():
+                arr = json.loads(mp.read_text(encoding="utf-8")) or []
+                if isinstance(arr, list):
+                    resource_count = len(arr)
+        except Exception:
+            pass
+        resource_group = None
+        try:
+            ap = d / "architecture.json"
+            if ap.exists():
+                arch = json.loads(ap.read_text(encoding="utf-8")) or {}
+                if isinstance(arch, dict):
+                    source_account = arch.get("account_id")
+                    source_region  = arch.get("region")
+                    discovery_mode = arch.get("discovery_mode") or "architecture"
+                    resource_group = arch.get("resource_group")
+        except Exception:
+            pass
+        # target region: read from agent_output.json's plan if available
+        try:
+            jp = d / "agent_output.json"
+            if jp.exists():
+                plan = json.loads(jp.read_text(encoding="utf-8")) or {}
+                # target_region not always at top — best-effort
+                target_region = plan.get("target_region") or plan.get("targetRegion")
+        except Exception:
+            pass
+
+        # Real created time from directory mtime — run_id is yyyymmdd_HHmmss
+        # but parsing it client-side is annoying; just send unix epoch.
+        try:
+            created_ts = d.stat().st_mtime
+        except Exception:
+            created_ts = None
+
         runs.append({
             "run_id": d.name,
             "has_summary": has_md,
             "has_json": has_json,
             "has_terraform": len(tf_files) > 0,
             "terraform_file_count": len(tf_files),
+            "resource_count": resource_count,
+            "discovery_mode": discovery_mode,
+            "source_account": source_account,
+            "source_region":  source_region,
+            "resource_group": resource_group,
+            "target_region":  target_region,
+            "created_at":     created_ts,
         })
     return {"runs": runs}
 
@@ -591,7 +670,50 @@ def get_output(run_id: str):
 
     tf_dir = run_dir / "terraform"
     if tf_dir.is_dir():
+        # Plain filename list (legacy)
         result["terraform_files"] = sorted(p.name for p in tf_dir.iterdir() if p.is_file())
+
+        # Build a flat {filename, content, description} list compatible with the
+        # live job's json_data.terraform shape — so the detail view renders the
+        # same TerraformViewer when re-opening a saved plan.  Walks root files
+        # plus modules/<name>/<file> subpaths.
+        compat: List[Dict[str, Any]] = []
+        for p in sorted(tf_dir.iterdir()):
+            if p.is_file():
+                try:
+                    compat.append({
+                        "filename": p.name,
+                        "content":  p.read_text(encoding="utf-8"),
+                        "description": "",
+                    })
+                except Exception:
+                    pass
+        modules_dir = tf_dir / "modules"
+        if modules_dir.is_dir():
+            for mod_path in sorted(modules_dir.iterdir()):
+                if not mod_path.is_dir():
+                    continue
+                for f in sorted(mod_path.iterdir()):
+                    if f.is_file():
+                        try:
+                            compat.append({
+                                "filename": f"modules/{mod_path.name}/{f.name}",
+                                "content":  f.read_text(encoding="utf-8"),
+                                "description": "",
+                            })
+                        except Exception:
+                            pass
+
+        # Splice into json_data so the frontend's PlanResultView (which reads
+        # `result.json_data.terraform`) finds them.
+        jd = result.get("json_data") or {}
+        if isinstance(jd, dict):
+            jd.setdefault("terraform", compat)
+            # Mirror the live-job shape so v2 metadata (validation_passed,
+            # terraform_modules) is reachable at jd.v2.
+            if "v2" not in jd:
+                jd["v2"] = dict(jd)  # shallow copy of plan_v2 fields
+            result["json_data"] = jd
     return result
 
 
@@ -650,6 +772,37 @@ def get_terraform_file(run_id: str, filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return {"filename": safe, "content": path.read_text(encoding="utf-8")}
+
+
+@router.put("/outputs/{run_id}/terraform/{filename}")
+def put_terraform_file(run_id: str, filename: str, body: Dict[str, Any] = Body(...)):
+    """Persist user edits to a single Terraform file under the plan's output dir.
+
+    Body: ``{"content": "..."}``.
+    Filename is sanitized.  Subpaths under ``modules/<name>/<file>`` are
+    accepted (the leading ``modules/`` segment is preserved).
+    """
+    raw_name = filename or ""
+    # Allow modules/<name>/<file> as a relative path
+    parts = [p for p in raw_name.split("/") if p and p != ".."]
+    if not parts:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    safe_parts = [_sanitize_tf_filename(p) or p for p in parts]
+    rel = "/".join(safe_parts)
+    path = OUTPUTS_ROOT / run_id / "terraform" / rel
+    # Ensure path stays inside terraform dir
+    tf_root = (OUTPUTS_ROOT / run_id / "terraform").resolve()
+    try:
+        if not str(path.resolve()).startswith(str(tf_root)):
+            raise HTTPException(status_code=400, detail="Path traversal blocked")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    content = body.get("content")
+    if not isinstance(content, str):
+        raise HTTPException(status_code=400, detail="content must be a string")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return {"filename": rel, "bytes": len(content.encode("utf-8"))}
 
 
 # ---------------------------------------------------------------------------

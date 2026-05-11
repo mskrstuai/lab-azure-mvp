@@ -54,13 +54,25 @@ PHASE_CANCELLED      = "cancelled"
 # Auto-fix loop limits — single shot per user click; user picks next action.
 MAX_AUTO_FIX_ATTEMPTS = int(os.getenv("DEPLOY_MAX_AUTO_FIX", "1"))
 
-# In-memory deploy state
+# In-memory deploy state.  Backed by a per-deploy state.json file inside
+# DEPLOYMENTS_ROOT/<run_id>__<deploy_id_short>/ — see _persist_deploy and
+# _restore_deploys_from_disk.  The combination lets browser refreshes (and
+# uvicorn auto-reloads) preserve in-flight phase / logs / etc.
 _deploys: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 
 BACKEND_ROOT     = Path(__file__).resolve().parent.parent.parent
 OUTPUTS_ROOT     = BACKEND_ROOT / "outputs"
 DEPLOYMENTS_ROOT = BACKEND_ROOT / ".deployments"
+
+# Phases that mean "active work was running when this snapshot was taken".
+# If we reload such a deploy from disk after a backend restart, the OS-level
+# terraform process is gone — we conservatively flip it to apply_failed so
+# the user can resume / restart instead of seeing a misleading "complete".
+_ACTIVE_PHASES = {
+    "preflight", "plan_running", "apply_running", "auto_fixing",
+    "data_migration", "validating",
+}
 
 
 # ── helpers ─────────────────────────────────────────────────────
@@ -79,11 +91,50 @@ def _get_deploy(deploy_id: str) -> Dict[str, Any]:
     return d
 
 
+def _state_file_for(deploy: Dict[str, Any]) -> Optional[Path]:
+    rid = deploy.get("run_id")
+    did = deploy.get("deploy_id")
+    if not rid or not did:
+        return None
+    return _deploy_workdir(rid, did) / "state.json"
+
+
+def _persist_deploy(deploy_id: str) -> None:
+    """Snapshot the in-memory deploy dict to disk so a restart can rebuild it.
+    Best-effort — never raises (a write failure must not break the live job)."""
+    try:
+        with _lock:
+            d = _deploys.get(deploy_id)
+            if d is None:
+                return
+            snap = {k: v for k, v in d.items() if k != "session_id"}
+        path = _state_file_for(snap)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(snap, default=str, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+# Throttle log-driven persistence so we don't write state.json per line.
+_LAST_PERSIST_AT: Dict[str, float] = {}
+_PERSIST_LOG_INTERVAL_S = 1.0
+
+
 def _append_log(deploy_id: str, line: str) -> None:
     with _lock:
         d = _deploys.get(deploy_id)
         if d is not None:
             d["logs"].append(line)
+    now = time.time()
+    last = _LAST_PERSIST_AT.get(deploy_id, 0.0)
+    if now - last >= _PERSIST_LOG_INTERVAL_S:
+        _LAST_PERSIST_AT[deploy_id] = now
+        _persist_deploy(deploy_id)
 
 
 def _set_phase(deploy_id: str, phase: str, *, error: Optional[str] = None) -> None:
@@ -96,6 +147,49 @@ def _set_phase(deploy_id: str, phase: str, *, error: Optional[str] = None) -> No
             d["error"] = error
         if phase in (PHASE_COMPLETE, PHASE_FAILED, PHASE_CANCELLED):
             d["completed_at"] = time.time()
+    _persist_deploy(deploy_id)
+
+
+def _restore_deploys_from_disk() -> None:
+    """Scan DEPLOYMENTS_ROOT on import and rebuild ``_deploys`` from
+    state.json files left by a previous backend run.  Mid-flight phases get
+    marked as ``apply_failed`` because their underlying terraform process
+    didn't survive the restart."""
+    if not DEPLOYMENTS_ROOT.is_dir():
+        return
+    restored = 0
+    for sub in DEPLOYMENTS_ROOT.iterdir():
+        if not sub.is_dir():
+            continue
+        sf = sub / "state.json"
+        if not sf.is_file():
+            continue
+        try:
+            data = json.loads(sf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        did = data.get("deploy_id")
+        if not did:
+            continue
+        # Mid-flight on previous run → can't actually be running now
+        if data.get("phase") in _ACTIVE_PHASES:
+            data["phase"] = PHASE_APPLY_FAILED
+            existing_err = data.get("error") or ""
+            note = "백엔드 재시작으로 작업이 중단되었습니다 — 다시 시도해 주세요."
+            data["error"] = f"{note}\n{existing_err}".strip() if existing_err else note
+            data["completed_at"] = data.get("completed_at") or time.time()
+        # Strip live-only fields we never want to resurrect
+        data.setdefault("logs", [])
+        with _lock:
+            _deploys[did] = data
+        restored += 1
+    if restored:
+        # Use stderr-equivalent — uvicorn prints these on startup
+        print(f"[deploy] restored {restored} deploy(s) from disk")
+
+
+# Run on module import (uvicorn loads the routers once at startup).
+_restore_deploys_from_disk()
 
 
 def _deploy_workdir(run_id: str, deploy_id: str) -> Path:
@@ -800,21 +894,28 @@ def start_deploy(body: dict):
                        "Reconnect via the Connect step or pass azure_subscription_id in the body.",
             )
 
-    # Read data migration scripts from the run's plan output
+    # Read data migration scripts from the run's plan output.
+    # agent_output.json is the v2 plan dict directly (data_migrations at the
+    # top level).  Older shapes wrapped it under "v2" — try both for compat.
     scripts: List[Dict[str, Any]] = []
     json_path = OUTPUTS_ROOT / run_id / "agent_output.json"
     if json_path.is_file():
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
-            v2 = data.get("v2") or {}
-            scripts = v2.get("data_migrations") or []
+            scripts = (
+                data.get("data_migrations")
+                or (data.get("v2") or {}).get("data_migrations")
+                or []
+            )
         except Exception:
             scripts = []
 
     deploy_id = str(uuid.uuid4())
+    deploy_name = (body.get("name") or "").strip() or None
     with _lock:
         _deploys[deploy_id] = {
             "deploy_id":               deploy_id,
+            "name":                    deploy_name,
             "run_id":                  run_id,
             "session_id":              session_id,
             "scope":                   scope,
@@ -852,19 +953,39 @@ def start_deploy(body: dict):
         return {"deploy_id": deploy_id, "phase": PHASE_FAILED, "preflight": pf}
 
     threading.Thread(target=_run_plan, args=(deploy_id,), daemon=True).start()
-    return {"deploy_id": deploy_id, "phase": PHASE_PLAN_RUNNING, "preflight": pf}
+    _persist_deploy(deploy_id)
+    return {"deploy_id": deploy_id, "name": deploy_name, "phase": PHASE_PLAN_RUNNING, "preflight": pf}
+
+
+def _plan_name_index() -> Dict[str, str]:
+    """Return ``{plan_run_id: name}`` for all savedPlans — used to label
+    deploys with their owning Plan's friendly name."""
+    try:
+        from app.services import db as plan_db
+        out: Dict[str, str] = {}
+        for p in plan_db.list_selected_plans():
+            prid = p.get("plan_run_id")
+            if prid:
+                out[prid] = p.get("name") or ""
+        return out
+    except Exception:
+        return {}
 
 
 @router.get("/list")
 def list_all_deploys():
     """All deploys in memory, newest first.  The Deploy page uses this as its
     default landing view."""
+    plan_names = _plan_name_index()
     items = []
     with _lock:
         for did, d in _deploys.items():
+            rid = d.get("run_id")
             items.append({
                 "deploy_id":     did,
-                "run_id":        d.get("run_id"),
+                "name":          d.get("name"),
+                "run_id":        rid,
+                "plan_name":     plan_names.get(rid) if rid else None,
                 "phase":         d.get("phase"),
                 "started_at":    d.get("started_at"),
                 "completed_at":  d.get("completed_at"),
@@ -883,6 +1004,7 @@ def list_deploys_for_run(run_id: str):
     in-flight deploy or start a fresh one from the same Plan.
     """
     rid = _safe_run_id(run_id)
+    plan_names = _plan_name_index()
     items = []
     with _lock:
         for did, d in _deploys.items():
@@ -890,7 +1012,9 @@ def list_deploys_for_run(run_id: str):
                 continue
             items.append({
                 "deploy_id":     did,
+                "name":          d.get("name"),
                 "run_id":        d.get("run_id"),
+                "plan_name":     plan_names.get(rid),
                 "phase":         d.get("phase"),
                 "started_at":    d.get("started_at"),
                 "completed_at":  d.get("completed_at"),
@@ -899,6 +1023,58 @@ def list_deploys_for_run(run_id: str):
             })
     items.sort(key=lambda x: x.get("started_at") or 0, reverse=True)
     return {"run_id": rid, "deploys": items}
+
+
+@router.delete("/{deploy_id}")
+def delete_deploy(deploy_id: str):
+    """Delete a deployment record.  Best-effort destroy first so cloud
+    resources don't leak — destroy failures are reported but the in-memory
+    record + workdir are still removed.
+
+    Set ``?destroy=false`` (or pass body ``{"destroy": false}``) to skip
+    destroy and just forget the record (e.g. for a deploy that already failed
+    before any apply happened)."""
+    from urllib.parse import parse_qs
+    deploy = _get_deploy(deploy_id)
+    rid = deploy.get("run_id")
+    work_str = deploy.get("work_dir")
+
+    destroy_log: List[str] = []
+    destroy_ok = True
+    work = Path(work_str) if work_str else _deploy_workdir(rid, deploy_id)
+    # Only attempt destroy if there's actually a workdir with state
+    if work.is_dir() and (work / "terraform.tfstate").exists():
+        env = os.environ.copy()
+        sub = (deploy.get("scope") or {}).get("azure_subscription_id")
+        if sub:
+            env["ARM_SUBSCRIPTION_ID"] = sub
+        try:
+            proc = subprocess.run(
+                ["terraform", "destroy", "-auto-approve", "-no-color"],
+                cwd=str(work), env=env, capture_output=True, text=True,
+                timeout=900,
+            )
+            destroy_log.append(proc.stdout or "")
+            destroy_log.append(proc.stderr or "")
+            destroy_ok = (proc.returncode == 0)
+        except Exception as e:
+            destroy_ok = False
+            destroy_log.append(f"destroy failed: {e}")
+
+    # Forget the record + remove workdir regardless of destroy outcome.
+    with _lock:
+        _deploys.pop(deploy_id, None)
+    _LAST_PERSIST_AT.pop(deploy_id, None)
+    if work.exists():
+        try:
+            shutil.rmtree(work)
+        except Exception:
+            pass
+    return {
+        "deleted":      True,
+        "destroy_ok":   destroy_ok,
+        "destroy_log":  ("\n".join(destroy_log)).strip()[-4000:],
+    }
 
 
 @router.get("/{deploy_id}")
@@ -913,9 +1089,12 @@ def get_status(deploy_id: str, since: int = 0):
     if since > total:
         since = total
     new_lines = all_logs[since:]
+    plan_names = _plan_name_index()
     return {
         "deploy_id":              deploy_id,
+        "name":                   deploy.get("name"),
         "run_id":                 deploy["run_id"],
+        "plan_name":              plan_names.get(deploy.get("run_id")),
         "phase":                  deploy["phase"],
         "started_at":             deploy["started_at"],
         "completed_at":           deploy.get("completed_at"),

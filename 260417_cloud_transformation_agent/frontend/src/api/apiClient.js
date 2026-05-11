@@ -91,6 +91,23 @@ export async function fetchTerraformFile(runId, filename) {
   return res.json();
 }
 
+export async function saveTerraformFile(runId, filename, content) {
+  // filename may contain a '/', e.g. modules/network/main.tf — encode each
+  // segment so the slash is preserved (FastAPI matches on the raw path).
+  const encPath = String(filename).split("/").map(encodeURIComponent).join("/");
+  const res = await fetch(
+    `${API_BASE}/migration/outputs/${encodeURIComponent(runId)}/terraform/${encPath}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: content ?? "" }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Terraform 파일 저장 실패");
+  return data;
+}
+
 /* ---------------- In-app Terraform deploy ---------------- */
 
 export async function fetchDeployPreflight() {
@@ -181,7 +198,7 @@ export async function listAwsResourceGroups(region) {
 /* ===================== Phase 3: Deploy v2 ======================= */
 
 export async function startDeployV2({
-  runId, sessionId, tfvars, autoRollback = true,
+  runId, sessionId, tfvars, autoRollback = true, name,
   azureSubscriptionId, azureSubscriptionName, azureRegion,
   awsAccountId, awsRegion,
 } = {}) {
@@ -190,6 +207,7 @@ export async function startDeployV2({
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       run_id:                  runId,
+      name:                    name || null,
       session_id:              sessionId || null,
       // Fallback scope (used when backend session is gone after reload):
       azure_subscription_id:   azureSubscriptionId || null,
@@ -203,6 +221,15 @@ export async function startDeployV2({
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || "Deploy 시작에 실패했습니다");
+  return data;
+}
+
+export async function deleteDeployV2(deployId) {
+  const res = await fetch(`${API_BASE}/deploy/v2/${encodeURIComponent(deployId)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Deploy 삭제 실패");
   return data;
 }
 
@@ -373,6 +400,69 @@ export async function execInDeployWorkdir(deployId, cmd) {
   return data;
 }
 
+/* ===================== Phase 2: Plan — selected (in-progress) ===== */
+
+export async function listSelectedPlans() {
+  const res = await fetch(`${API_BASE}/plan/selected`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 목록 조회 실패");
+  return data;
+}
+
+export async function getSelectedPlan(planId) {
+  const res = await fetch(`${API_BASE}/plan/selected/${encodeURIComponent(planId)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 조회 실패");
+  return data;
+}
+
+export async function createSelectedPlan(payload) {
+  const res = await fetch(`${API_BASE}/plan/selected`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 생성 실패");
+  return data;
+}
+
+export async function updateSelectedPlan(planId, patch) {
+  const res = await fetch(`${API_BASE}/plan/selected/${encodeURIComponent(planId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch || {}),
+    // keepalive lets the request continue after a page navigation / refresh,
+    // so a status="mapping" PATCH triggered by the Mapping button isn't lost
+    // when the user immediately reloads.
+    keepalive: true,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 업데이트 실패");
+  return data;
+}
+
+export async function deleteSelectedPlan(planId) {
+  const res = await fetch(`${API_BASE}/plan/selected/${encodeURIComponent(planId)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 삭제 실패");
+  return data;
+}
+
+export async function bulkDeleteSelectedPlans(ids) {
+  const res = await fetch(`${API_BASE}/plan/selected/bulk-delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: ids || [] }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Selected plan 일괄 삭제 실패");
+  return data;
+}
+
+
 /* ===================== Phase 2: Plan ============================ */
 
 export async function assessResources(resources) {
@@ -501,6 +591,31 @@ export async function getCredentialSession(sessionId) {
 
 export async function deleteCredentialSession(sessionId) {
   await fetch(`${API_BASE}/credentials/session/${sessionId}`, { method: "DELETE" });
+}
+
+export async function listActiveSessions() {
+  const res = await fetch(`${API_BASE}/credentials/active-sessions`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "활성 세션 조회 실패");
+  return data;
+}
+
+export async function fetchSettingsEnv() {
+  const res = await fetch(`${API_BASE}/settings/env`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "설정 값 조회 실패");
+  return data;
+}
+
+export async function saveSettingsEnv(values) {
+  const res = await fetch(`${API_BASE}/settings/env`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values: values || {} }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "설정 저장 실패");
+  return data;
 }
 
 export async function describeAwsResourceGroup(groupName, region) {

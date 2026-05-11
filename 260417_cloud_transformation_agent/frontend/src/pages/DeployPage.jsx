@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { TopologyView, MappingSummaryTable } from "./MigrationPage";
 import {
   abandonDeploy,
   applyFix,
@@ -10,6 +11,7 @@ import {
   execInDeployWorkdir,
   fetchMigrationOutput,
   fetchMigrationOutputs,
+  listSelectedPlans,
   getDeployV2Status,
   getRunVariables,
   listAllDeploys,
@@ -19,6 +21,7 @@ import {
   retryDeployApply,
   skipDataMigration,
   startDeployV2,
+  deleteDeployV2,
 } from "../api/apiClient";
 
 /* ── Phase metadata ────────────────────────────────────────── */
@@ -222,6 +225,19 @@ function PlanPreview({ planOutput, onApprove, onCancel, applying }) {
 /* ── Data migration checklist ──────────────────────────────── */
 
 function DataMigrationChecklist({ deployId, scripts, fullScripts, onComplete, onSkip }) {
+  // Per-(scriptIdx,stepIdx) execution state — output, exit code, busy flag.
+  const [runs, setRuns] = useState({});  // key "i:si" → { busy, exit, stdout, stderr }
+  const runStep = async (i, si, cmd) => {
+    const key = `${i}:${si}`;
+    setRuns(prev => ({ ...prev, [key]: { ...(prev[key] || {}), busy: true } }));
+    try {
+      const r = await execInDeployWorkdir(deployId, cmd);
+      setRuns(prev => ({ ...prev, [key]: { busy: false, exit: r.exit_code, stdout: r.stdout, stderr: r.stderr } }));
+    } catch (e) {
+      setRuns(prev => ({ ...prev, [key]: { busy: false, exit: -1, stdout: "", stderr: e.message || String(e) } }));
+    }
+  };
+
   return (
     <div>
       <div style={{ fontSize: "0.82rem", color: "var(--color-text-light)", marginBottom: 10 }}>
@@ -257,22 +273,69 @@ function DataMigrationChecklist({ deployId, scripts, fullScripts, onComplete, on
                 )}
               </div>
               {fullScript?.steps?.length > 0 && (
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ fontSize: "0.75rem", cursor: "pointer", color: "var(--color-text-light)" }}>
-                    명령어 보기
-                  </summary>
-                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-                    {fullScript.steps.map((step, si) => (
-                      <pre key={si} style={{
-                        margin: 0, padding: "6px 10px",
-                        background: "#0d1117", borderRadius: 4,
-                        fontSize: "0.72rem", fontFamily: "monospace",
-                        color: "#00d4aa",
-                        whiteSpace: "pre-wrap", wordBreak: "break-all",
-                      }}>{step.command}</pre>
-                    ))}
-                  </div>
-                </details>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {fullScript.steps.map((step, si) => {
+                    const key   = `${i}:${si}`;
+                    const state = runs[key];
+                    return (
+                      <div key={si} style={{
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 4, padding: 6,
+                        background: "var(--color-bg)",
+                      }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                          <span style={{ fontSize: "0.7rem", color: "var(--color-text-light)" }}>
+                            {step.title || `step ${si + 1}`}
+                          </span>
+                          <div style={{ flex: 1 }} />
+                          <button type="button"
+                            onClick={() => runStep(i, si, step.command)}
+                            disabled={state?.busy}
+                            style={{
+                              fontSize: "0.72rem", padding: "2px 8px",
+                              background: state?.busy ? "#6b7280" : "#2563eb",
+                              color: "#fff", border: "none",
+                              borderRadius: 3, cursor: state?.busy ? "wait" : "pointer",
+                            }}
+                            title="이 명령을 backend 작업 디렉토리에서 실행합니다">
+                            {state?.busy ? "실행 중…" : "▶ 실행"}
+                          </button>
+                        </div>
+                        <pre style={{
+                          margin: 0, padding: "6px 10px",
+                          background: "#0d1117", borderRadius: 4,
+                          fontSize: "0.72rem", fontFamily: "monospace",
+                          color: "#00d4aa",
+                          whiteSpace: "pre-wrap", wordBreak: "break-all",
+                        }}>{step.command}</pre>
+                        {state && state.busy === false && (
+                          <details open style={{ marginTop: 4 }}>
+                            <summary style={{
+                              fontSize: "0.7rem", cursor: "pointer",
+                              color: state.exit === 0 ? "#16a34a" : "#dc2626",
+                            }}>
+                              {state.exit === 0 ? "✓ 성공" : `✗ 실패 (exit ${state.exit})`}
+                            </summary>
+                            {state.stdout && (
+                              <pre style={{
+                                marginTop: 4, padding: "5px 8px", background: "#0d1117",
+                                color: "#c9d1d9", fontSize: "0.7rem", borderRadius: 3,
+                                whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto",
+                              }}>{state.stdout}</pre>
+                            )}
+                            {state.stderr && (
+                              <pre style={{
+                                marginTop: 4, padding: "5px 8px", background: "#1a0d0d",
+                                color: "#ff7b7b", fontSize: "0.7rem", borderRadius: 3,
+                                whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto",
+                              }}>{state.stderr}</pre>
+                            )}
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           );
@@ -361,7 +424,7 @@ function Modal({ title, onClose, children, footer }) {
 
 /* ── All Deploys list (Deploy 페이지 메인 화면) ─────────── */
 
-function AllDeploysList({ deploys, loading, runs, canDeploy, onStartNew, onResume, onRefresh, onGoToPlan }) {
+function AllDeploysList({ deploys, loading, runs, canDeploy, onStartNew, onResume, onRefresh, onGoToPlan, onDelete }) {
   const runMap = Object.fromEntries((runs || []).map(r => [r.run_id, r]));
 
   return (
@@ -441,15 +504,15 @@ function AllDeploysList({ deploys, loading, runs, canDeploy, onStartNew, onResum
                 </span>
                 <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <code style={{ fontSize: "0.74rem", color: "var(--color-text)" }}>
-                      {d.deploy_id.slice(0, 12)}…
-                    </code>
+                    <strong style={{ fontSize: "0.84rem", color: "var(--color-text)" }}>
+                      {d.name || `Deploy-${d.deploy_id.slice(0, 8)}`}
+                    </strong>
                     {runInfo
                       ? <span style={{ fontSize: "0.74rem", color: "var(--color-text-light)" }}>
-                          Plan: <code>{d.run_id}</code>
+                          Plan: {d.plan_name || <code>{d.run_id}</code>}
                         </span>
                       : <span style={{ fontSize: "0.74rem", color: "#d97706" }}>
-                          (Plan {d.run_id} — 출력 없음)
+                          (Plan {d.plan_name || d.run_id} — 출력 없음)
                         </span>
                     }
                   </div>
@@ -466,6 +529,15 @@ function AllDeploysList({ deploys, loading, runs, canDeploy, onStartNew, onResum
                   className="tab action-btn action-btn--secondary"
                   style={{ minHeight: 30, padding: "0 14px", fontSize: "0.78rem" }}>
                   {isTerminal ? "📂 결과 보기" : "▶ 이어서 진행"}
+                </button>
+                <button type="button" onClick={() => onDelete?.(d)}
+                  className="tab"
+                  title="삭제 — 먼저 terraform destroy 후 기록 제거"
+                  style={{
+                    minHeight: 30, padding: "0 12px", fontSize: "0.78rem",
+                    border: "1px solid #dc2626", color: "#dc2626", background: "transparent",
+                  }}>
+                  🗑 삭제
                 </button>
               </div>
             );
@@ -1594,19 +1666,6 @@ function ValidationPanel({ validation }) {
           ⚠ {validation.error}
         </div>
       )}
-      {Object.entries(validation.by_type || {}).length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-          {Object.entries(validation.by_type).map(([t, n]) => (
-            <span key={t} style={{
-              fontSize: "0.72rem", padding: "3px 10px", borderRadius: 99,
-              background: "rgba(0,212,170,0.06)", border: "1px solid var(--color-accent)",
-              color: "var(--color-accent)",
-            }}>
-              {t.split("/").pop()} × {n}
-            </span>
-          ))}
-        </div>
-      )}
       <details>
         <summary style={{ fontSize: "0.78rem", cursor: "pointer", color: "var(--color-text-light)" }}>
           전체 리소스 목록 ({total})
@@ -1630,6 +1689,9 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
   // reload), the deploy step is usable even when sessionId is invalid.
   const canDeploy = !!(sessionId || sessionScope?.azure_subscription_id);
   const [runs, setRuns]               = useState([]);
+  // savedPlans (DB) — used to display Plan name in the dropdown and to
+  // restrict the new-deploy choices to plans whose status="ready".
+  const [savedPlans, setSavedPlans]   = useState([]);
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [output, setOutput]           = useState(null);
   const [deploy, setDeploy]           = useState(null);
@@ -1647,19 +1709,61 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
   const [loadingAllDeploys, setLoadingAllDeploys] = useState(false);
   const [showStartConfig, setShowStartConfig] = useState(false);
   const [autoRollback, setAutoRollback]       = useState(true);   // apply 실패 시 자동 destroy + re-plan
+  // Per-deploy delete confirm modal
+  const [pendingDeleteDeploy, setPendingDeleteDeploy] = useState(null);
+  const [deletingDeploy, setDeletingDeploy]           = useState(false);
+  const [deleteDeployError, setDeleteDeployError]     = useState(null);
   const logBoxRef = useRef(null);
 
-  // Load runs on mount
+  // Load runs (disk output dirs) and savedPlans (DB) on mount.
   useEffect(() => {
     fetchMigrationOutputs()
       .then(res => {
         const list = (res.runs || []).filter(r => r.has_terraform);
         setRuns(list);
-        if (list.length > 0 && !selectedRunId) setSelectedRunId(list[0].run_id);
       })
       .catch(() => setRuns([]));
+    listSelectedPlans()
+      .then(res => setSavedPlans(res.plans || []))
+      .catch(() => setSavedPlans([]));
+    // Restore the last-opened deploy after a browser refresh — backend keeps
+    // the in-flight phase / logs alive so the user lands back where they were.
+    const lastId = localStorage.getItem("lastOpenedDeployId");
+    if (lastId) {
+      getDeployV2Status(lastId, 0)
+        .then((status) => {
+          setLogs(status.log_lines || []);
+          setLogOffset(status.log_total ?? 0);
+          setDeploy({ ...status, deploy_id: lastId, log_lines: undefined });
+        })
+        .catch(() => { localStorage.removeItem("lastOpenedDeployId"); });
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Mirror the active deploy id into localStorage so refresh keeps context.
+  useEffect(() => {
+    if (deploy?.deploy_id) localStorage.setItem("lastOpenedDeployId", deploy.deploy_id);
+    else                   localStorage.removeItem("lastOpenedDeployId");
+  }, [deploy?.deploy_id]);
+
+  // Build the set of *deployable* plans for the new-deploy dropdown:
+  // savedPlan rows with status="ready" AND a plan_run_id whose disk output
+  // dir actually exists (i.e. terraform was generated).
+  const deployablePlans = useMemo(() => {
+    const runById = new Map((runs || []).map(r => [r.run_id, r]));
+    return (savedPlans || [])
+      .filter(p => p.status === "ready" && p.plan_run_id && runById.has(p.plan_run_id))
+      .map(p => ({ ...p, run: runById.get(p.plan_run_id) }));
+  }, [savedPlans, runs]);
+
+  // When the dropdown choices first load, default-select the most recent.
+  useEffect(() => {
+    if (!selectedRunId && deployablePlans.length > 0) {
+      setSelectedRunId(deployablePlans[0].plan_run_id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deployablePlans]);
 
   // Load output for the run we care about — either the dropdown selection
   // (new-deploy modal) OR the active deploy's run_id (when user resumed an
@@ -1806,10 +1910,16 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
       setStarting(false);
       return;
     }
+    // Friendly random name (matches Plan generator style).
+    const adj  = ["nimble","violet","swift","calm","amber","midnight","lucid","brave","cosmic","arctic"];
+    const noun = ["otter","sparrow","yak","comet","harbor","fjord","willow","delta","ember","echo"];
+    const pick = a => a[Math.floor(Math.random() * a.length)];
+    const friendlyName = `${pick(adj)}-${pick(noun)}-${Math.floor(Math.random() * 9000 + 1000)}`;
     try {
       const res = await startDeployV2({
         runId: selectedRunId,
         sessionId,
+        name: friendlyName,
         // Always send scope as a fallback so deploy works even after backend
         // reload (when the in-memory session is gone).
         azureSubscriptionId:   sessionScope?.azure_subscription_id,
@@ -1933,16 +2043,84 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
                 setError(e.message || String(e));
               }
             }}
+            onDelete={(d) => setPendingDeleteDeploy(d)}
             onRefresh={refreshAllDeploys}
             onGoToPlan={onGoToPlan}
           />
+
+          {/* 배포 삭제 확인 모달 — 먼저 destroy 시도 후 기록 제거 */}
+          {pendingDeleteDeploy && (
+            <Modal
+              title="🗑 배포 기록 삭제"
+              onClose={() => { setPendingDeleteDeploy(null); setDeleteDeployError(null); }}
+              footer={
+                <>
+                  <button type="button"
+                    onClick={() => { setPendingDeleteDeploy(null); setDeleteDeployError(null); }}
+                    disabled={deletingDeploy}
+                    className="tab action-btn action-btn--secondary"
+                    style={{ minHeight: 36, padding: "0 18px" }}>
+                    취소
+                  </button>
+                  <div style={{ flex: 1 }} />
+                  <button type="button"
+                    onClick={async () => {
+                      setDeletingDeploy(true); setDeleteDeployError(null);
+                      try {
+                        const r = await deleteDeployV2(pendingDeleteDeploy.deploy_id);
+                        if (!r.destroy_ok) {
+                          setDeleteDeployError(
+                            "terraform destroy 가 실패했지만 기록은 제거됐습니다. 남은 리소스가 있는지 Azure 포털에서 확인해 주세요.",
+                          );
+                        }
+                        setPendingDeleteDeploy(null);
+                        await refreshAllDeploys();
+                        if (deploy?.deploy_id === pendingDeleteDeploy.deploy_id) {
+                          setDeploy(null); setLogs([]); setLogOffset(0);
+                        }
+                      } catch (e) {
+                        setDeleteDeployError(e.message || String(e));
+                      } finally {
+                        setDeletingDeploy(false);
+                      }
+                    }}
+                    disabled={deletingDeploy}
+                    style={{
+                      minHeight: 36, padding: "0 22px", fontSize: "0.85rem", fontWeight: 600,
+                      background: "#dc2626", color: "#fff", border: "1px solid #dc2626",
+                      borderRadius: "var(--radius-sm)", cursor: "pointer",
+                    }}>
+                    {deletingDeploy ? <><span className="spinner" />destroy 실행 중…</> : "destroy 후 삭제"}
+                  </button>
+                </>
+              }
+            >
+              <p style={{ marginTop: 0, fontSize: "0.88rem" }}>
+                <strong>{pendingDeleteDeploy.name || `Deploy-${pendingDeleteDeploy.deploy_id.slice(0, 8)}`}</strong>
+                {pendingDeleteDeploy.plan_name && (
+                  <span style={{ color: "var(--color-text-light)" }}> (Plan: {pendingDeleteDeploy.plan_name})</span>
+                )}
+                <span> 을 삭제합니다.</span>
+              </p>
+              <ul style={{ fontSize: "0.82rem", color: "var(--color-text-light)", lineHeight: 1.6, marginLeft: 18 }}>
+                <li>먼저 <code>terraform destroy -auto-approve</code> 가 실행됩니다.</li>
+                <li>destroy 가 실패해도 배포 기록과 작업 디렉토리는 제거됩니다.</li>
+                <li>남은 클라우드 리소스는 Azure 포털에서 직접 확인이 필요할 수 있습니다.</li>
+              </ul>
+              {deleteDeployError && (
+                <div className="form-error" style={{ marginTop: 10 }}>
+                  {deleteDeployError}
+                </div>
+              )}
+            </Modal>
+          )}
 
           {/* 배포 시작 팝업 — "🚀 배포 시작" CTA 클릭 시 모달로 표시 */}
           {showStartConfig && (
             <Modal
               title="🚀 새 배포 시작"
               onClose={() => setShowStartConfig(false)}
-              footer={runs.length > 0 ? (
+              footer={deployablePlans.length > 0 ? (
                 <>
                   <button type="button" onClick={() => setShowStartConfig(false)}
                     className="tab action-btn action-btn--secondary"
@@ -1959,9 +2137,9 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
                 </>
               ) : null}
             >
-              {runs.length === 0 ? (
+              {deployablePlans.length === 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 16, color: "var(--color-text-light)" }}>
-                  <p style={{ margin: "0 0 12px" }}>배포 가능한 Plan 결과가 없습니다.</p>
+                  <p style={{ margin: "0 0 12px" }}>수립이 완료된 Plan 이 없습니다.</p>
                   <button type="button" onClick={onGoToPlan}
                     className="tab action-btn action-btn--secondary">
                     ➜ Plan 단계로 이동
@@ -1970,7 +2148,7 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
               ) : (
                 <>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                    <label style={{ fontSize: "0.82rem", color: "var(--color-text-light)" }}>Plan 결과 선택</label>
+                    <label style={{ fontSize: "0.82rem", color: "var(--color-text-light)" }}>Plan 선택</label>
                     <select value={selectedRunId || ""} onChange={e => setSelectedRunId(e.target.value)}
                       style={{
                         flex: 1, minWidth: 240,
@@ -1979,9 +2157,9 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
                         background: "var(--color-surface)", color: "var(--color-text)",
                         fontSize: "0.82rem",
                       }}>
-                      {runs.map(r => (
-                        <option key={r.run_id} value={r.run_id}>
-                          {r.run_id} {r.has_terraform ? `· tf ${r.terraform_file_count}` : ""}
+                      {deployablePlans.map(p => (
+                        <option key={p.plan_run_id} value={p.plan_run_id}>
+                          {p.name || `Plan-${p.id.slice(0, 8)}`}
                         </option>
                       ))}
                     </select>
@@ -2152,7 +2330,7 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
             {(phase === "apply_running" || phase === "applied" || phase === "validating" || phase === "auto_fixing") && (
               <div style={{ fontSize: "0.85rem", color: "var(--color-text-light)" }}>
                 <span className="spinner" />
-                {phase === "apply_running" && "terraform apply 진행 중…"}
+                {phase === "apply_running" && " terraform apply 진행 중…"}
                 {phase === "auto_fixing"   && "AI가 코드를 분석하고 자동 수정 중… 실시간 로그에서 진행 상황 확인 가능"}
                 {phase === "validating"    && "Azure 리소스 확인 중…"}
                 {phase === "applied"       && "다음 단계 준비 중…"}
@@ -2200,7 +2378,31 @@ export default function DeployPage({ sessionId, sessionScope, onGoToPlan, onGoTo
             )}
 
             {phase === "complete" && (
-              <ValidationPanel validation={deploy.validation} />
+              <>
+                <ValidationPanel validation={deploy.validation} />
+                {/* Plan 수립 시점에 만들어진 Azure 토폴로지 + 리소스 매핑 — 같은
+                    데이터를 deploy 완료 후에도 한눈에 다시 볼 수 있게 노출. */}
+                {output?.architecture && (
+                  <div style={{
+                    marginTop: 14, padding: "12px 14px",
+                    background: "var(--color-bg)",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: "var(--radius-sm)",
+                  }}>
+                    <TopologyView
+                      architecture={output.architecture}
+                      mappings={output.azure_mappings || []}
+                      side="azure"
+                      title="🟦 Azure 토폴로지 (배포된 리소스)"
+                    />
+                  </div>
+                )}
+                {(output?.azure_mappings || []).length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    <MappingSummaryTable mappings={output.azure_mappings} />
+                  </div>
+                )}
+              </>
             )}
           </div>
 

@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services import aws_auth, azure_auth
+from app.services import db as state_db
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -163,6 +164,20 @@ def aws_connect(req: AwsConnectRequest):
             "assumed_sessions": {},
         }
 
+    # Persist sanitized AWS metadata so the bottom-bar can show the
+    # connection even after backend reload (live boto3 session is gone but
+    # we know what *was* connected).
+    try:
+        state_db.upsert_session(sid, aws_meta={
+            "account_id":  identity.get("account_id"),
+            "region":      req.region,
+            "method":      req.method,
+            "user_arn":    identity.get("arn"),
+            "user_id":     identity.get("user_id"),
+        })
+    except Exception:
+        pass  # DB is best-effort; never block the connect flow
+
     return {
         "session_id": sid,
         "identity": identity,
@@ -226,6 +241,15 @@ def azure_connect(req: AzureConnectRequest):
             "tenant_id": req.tenant_id,
         }
 
+    try:
+        state_db.upsert_session(sid, azure_meta={
+            "method":          req.method,
+            "tenant_id":       req.tenant_id,
+            "subscriptions":   subscriptions,
+        })
+    except Exception:
+        pass
+
     return {
         "session_id": sid,
         "subscriptions": subscriptions,
@@ -268,6 +292,11 @@ def set_scope(req: ScopeRequest):
     with _lock:
         _sessions[req.session_id]["scope"] = scope
 
+    try:
+        state_db.upsert_session(req.session_id, scope=scope)
+    except Exception:
+        pass
+
     return {"ok": True, "scope": scope}
 
 
@@ -293,4 +322,40 @@ def get_session(session_id: str):
 def delete_session(session_id: str):
     with _lock:
         _sessions.pop(session_id, None)
+    try:
+        state_db.delete_session(session_id)
+    except Exception:
+        pass
     return {"ok": True}
+
+
+@router.get("/active-sessions")
+def list_active_sessions():
+    """All known sessions (persisted metadata) with a `live` flag.
+
+    The bottom-bar UI uses this so it can show a connection summary even
+    after a backend reload — `live: false` means the saved metadata is
+    visible but the in-memory credential is gone (user must reconnect to
+    actually call AWS/Azure APIs)."""
+    out = []
+    try:
+        rows = state_db.list_sessions()
+    except Exception:
+        rows = []
+    with _lock:
+        live_ids = set(_sessions.keys())
+    for r in rows:
+        sid = r.get("id")
+        live_session = _sessions.get(sid) if sid in live_ids else None
+        out.append({
+            "session_id": sid,
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "aws_meta":   r.get("aws_meta"),
+            "azure_meta": r.get("azure_meta"),
+            "scope":      r.get("scope"),
+            "aws_live":   bool(live_session and live_session.get("aws")),
+            "azure_live": bool(live_session and live_session.get("azure")),
+            "live":       sid in live_ids,
+        })
+    return {"sessions": out}

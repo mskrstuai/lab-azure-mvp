@@ -43,7 +43,7 @@ body {
 }
 
 .sidebar {
-  width: 232px;
+  /* width is now controlled by inline style (resizable), default in JSX */
   flex-shrink: 0;
   background: #0d1117;
   border-right: 1px solid var(--color-border);
@@ -54,7 +54,9 @@ body {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
   z-index: 100;
+  min-width: 56px;
 }
 
 .sidebar-brand {
@@ -68,21 +70,47 @@ body {
 }
 
 .sidebar-brand-icon {
-  font-size: 1.25rem;
+  font-size: 1.6rem;          /* larger so it stays visible in icon-only mode */
 }
 
 .sidebar-title-h1 {
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: 1.05rem;         /* bumped from 0.9 — user said brand was too small */
+  font-weight: 700;
   color: var(--color-text);
   letter-spacing: -0.2px;
   line-height: 1.2;
 }
 
 .sidebar-subtitle {
-  font-size: 0.7rem;
+  font-size: 0.78rem;         /* bumped from 0.7 */
   color: var(--color-text-light);
-  margin-top: 2px;
+  margin-top: 3px;
+}
+
+/* Icon-only collapsed mode (added on the .sidebar root by JS when narrow) */
+.sidebar.collapsed .sidebar-brand {
+  justify-content: center;
+  padding: 16px 0 14px;
+}
+.sidebar.collapsed .sidebar-brand > div { display: none; }
+.sidebar.collapsed .sidebar-nav-item { justify-content: center; padding: 8px 0; }
+.sidebar.collapsed .sidebar-nav-item > span:not(.sidebar-nav-icon) { display: none; }
+.sidebar.collapsed .sidebar-nav-icon { margin: 0; }
+
+/* Resize handle on right edge */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 110;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.dragging {
+  background: rgba(96, 165, 250, 0.25);
 }
 
 .sidebar-nav {
@@ -203,8 +231,9 @@ body {
 .main-content {
   flex: 1;
   min-width: 0;
-  max-width: 1400px;
-  margin: 0 auto;
+  /* No max-width — let the content fill the viewport so tables / bars
+     stretch with the window. */
+  margin: 0;
   padding: 28px 32px 48px;
   width: 100%;
 }

@@ -9,6 +9,8 @@ backend/**/__pycache__/
 backend/**/*.pyc
 backend/outputs/
 backend/.deployments/
+backend/.cta-state.db
+backend/.cta-state.db-*
 
 # Node
 frontend/node_modules/

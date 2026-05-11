@@ -7,11 +7,88 @@ data-migration commands (pg_dump, AzCopy, redis RDB, ...).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, HTTPException
+
+from app.services import db as plan_db
 
 router = APIRouter(prefix="/plan", tags=["plan"])
+
+
+# ── Selected plans (in-progress: Selected → Mapped → 수립 완료) ──
+
+@router.get("/selected")
+def list_selected_plans():
+    return {"plans": plan_db.list_selected_plans()}
+
+
+@router.get("/selected/{plan_id}")
+def get_selected_plan(plan_id: str):
+    plan = plan_db.get_selected_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return plan
+
+
+@router.post("/selected")
+def create_selected_plan(body: Dict[str, Any] = Body(...)):
+    """Create a new in-progress Plan from a Discovery selection.
+
+    Body:
+        {
+          "name":          "optional human-readable name",
+          "scoped_meta":   { "account_id": "...", "region": "ap-northeast-2", ... },
+          "scoped_rows":   [ ... AWS resource rows ... ],
+          "architecture":  { ... Phase 1 graph (optional) ... },
+          "mappings":      [ ... Azure mappings (optional, presence promotes status to 'mapped') ... ],
+          "azure_region":  "koreacentral",
+          "goals":         "..."
+        }
+    """
+    rows = body.get("scoped_rows") or []
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="scoped_rows must be a list")
+    return plan_db.create_selected_plan(
+        name=body.get("name"),
+        scoped_meta=body.get("scoped_meta"),
+        scoped_rows=rows,
+        architecture=body.get("architecture"),
+        mappings=body.get("mappings"),
+        azure_region=body.get("azure_region"),
+        goals=body.get("goals"),
+    )
+
+
+@router.patch("/selected/{plan_id}")
+def update_selected_plan(plan_id: str, body: Dict[str, Any] = Body(...)):
+    plan = plan_db.update_selected_plan(
+        plan_id,
+        name=body.get("name"),
+        status=body.get("status"),
+        azure_region=body.get("azure_region"),
+        goals=body.get("goals"),
+        architecture=body.get("architecture"),
+        mappings=body.get("mappings"),
+    )
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return plan
+
+
+@router.delete("/selected/{plan_id}")
+def delete_selected_plan(plan_id: str):
+    if not plan_db.delete_selected_plan(plan_id):
+        raise HTTPException(status_code=404, detail="plan not found")
+    return {"deleted": True, "id": plan_id}
+
+
+@router.post("/selected/bulk-delete")
+def bulk_delete_selected_plans(body: Dict[str, Any] = Body(...)):
+    ids = body.get("ids") or []
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="ids must be a list")
+    return {"deleted": plan_db.delete_selected_plans(ids)}
 
 
 @router.post("/data-migration-scripts")

@@ -7,6 +7,11 @@ import {
   fetchMigrationOutputs,
   deletePlanOutput,
   generateDataMigrationScripts,
+  listSelectedPlans,
+  getSelectedPlan,
+  updateSelectedPlan,
+  deleteSelectedPlan,
+  bulkDeleteSelectedPlans,
 } from "../api/apiClient";
 import Pagination, { usePagination } from "../components/Pagination";
 import TerraformViewer from "../components/TerraformViewer";
@@ -121,7 +126,7 @@ function DataMigrationSection({ scopedRows, azureRegion }) {
   );
 }
 
-function MappingSummaryTable({ mappings }) {
+export function MappingSummaryTable({ mappings }) {
   const rows = (mappings || []).filter(Boolean);
   const tco = useMemo(() => {
     let aws = 0, azure = 0, withPrices = 0;
@@ -424,7 +429,7 @@ const MAPPING_CONCURRENCY = 10;
  * Shared mapping hook: **one API call per resource**, with up to
  * ``MAPPING_CONCURRENCY`` in flight.  Pause aborts all in-flight requests.
  */
-export function useAzureMapping(rows, azureRegion, sourceAwsRegion, targetSubscriptionId = "") {
+export function useAzureMapping(rows, azureRegion, sourceAwsRegion, targetSubscriptionId = "", seedMappingsRef = null) {
   /** aws_key → mapping row from the backend */
   const [mapByKey, setMapByKey] = useState({});
   /** idle | running | paused | complete */
@@ -462,13 +467,32 @@ export function useAzureMapping(rows, azureRegion, sourceAwsRegion, targetSubscr
     (rows?.length || 0) > 0 && progress.done === progress.total;
 
   // Reset when scope or target Azure region changes (pricing / SKUs are region-specific).
+  // If a one-shot seedMappingsRef has been pre-loaded by the caller (e.g. when
+  // restoring a saved plan from DB), populate mapByKey from it instead of
+  // clearing — this is what makes the Mapping/Plan-수립 buttons usable after a
+  // browser refresh.  The ref is consumed (set to null) so the next sig change
+  // doesn't re-seed stale data.
   useEffect(() => {
-    setMapByKey({});
     setError(null);
     setPhase("idle");
     setInFlightIndices(new Set());
     pauseRequestedRef.current = false;
     sigRef.current = "";
+
+    const seed = seedMappingsRef?.current;
+    if (seed && seed.length) {
+      seedMappingsRef.current = null;  // consume
+      const next = {};
+      for (const m of seed) {
+        if (m && m.aws_key) next[m.aws_key] = m;
+      }
+      setMapByKey(next);
+      mapByKeyRef.current = next;
+      setPhase((rows?.length || 0) > 0 && Object.keys(next).length === rows.length ? "complete" : "idle");
+    } else {
+      setMapByKey({});
+      mapByKeyRef.current = {};
+    }
   }, [sig, azureRegion]);
 
   useEffect(() => {
@@ -1146,7 +1170,7 @@ function VpcDiagram({ vpc, side }) {
   );
 }
 
-function TopologyView({ architecture, mappings, side, title }) {
+export function TopologyView({ architecture, mappings, side, title }) {
   const tree = side === "azure"
     ? buildAzureTree(architecture, mappings)
     : buildAwsTree(architecture);
@@ -1320,10 +1344,10 @@ function ScopeSummaryTable({
           )}
           <button
             type="button"
-            className="tab action-btn action-btn--secondary"
+            className="run-btn action-btn"
             onClick={runMapping}
             disabled={mappingLoading || mappingComplete}
-            style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
+            style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}
             title={
               mappingComplete
                 ? "범위 내 리소스 Mapping이 모두 완료되었습니다"
@@ -1346,7 +1370,7 @@ function ScopeSummaryTable({
           {mappingLoading && (
             <button
               type="button"
-              className="tab action-btn action-btn--secondary"
+              className="action-btn action-btn--secondary"
               onClick={pauseMapping}
               style={{ minHeight: 34, padding: "0 14px", fontSize: "0.82rem" }}
               title="현재 항목 처리가 끝나면 일시 중지합니다"
@@ -1962,11 +1986,6 @@ function ConfirmModal({ title, body, confirmLabel = "확인", cancelLabel = "취
 
 /* ── Plans master-detail page ────────────────────────────── */
 
-// Sentinel id used in checkbox selection for the (in-memory) in-progress plan.
-// Treated specially by the delete handler — it can't be deleted from disk
-// because it isn't on disk; instead we clear the React scope state.
-const IN_PROGRESS_ID = "__in_progress__";
-
 const SAVED_PLANS_KEY = "migrationPlans:v1";
 
 function _loadSavedPlans() {
@@ -1994,9 +2013,11 @@ function _hashScope(scopedRows, scopedMeta) {
 }
 
 const PLAN_STATUS_META = {
-  selected: { color: "#d97706", label: "🟡 Selected",  hint: "Discovery 에서 선택만 됨 — 매핑 필요" },
-  mapped:   { color: "#3b82f6", label: "🟢 Mapped",    hint: "리소스 매핑 완료 — Plan 수립 가능" },
-  ready:    { color: "#16a34a", label: "✓ 수립 완료",  hint: "Terraform 모듈 + 스크립트 생성됨, Deploy 가능" },
+  selected: { color: "#d97706", label: "🟡 Selected",   hint: "Discovery 에서 선택만 됨 — 매핑 필요" },
+  mapping:  { color: "#60a5fa", label: "🔁 Mapping",    hint: "리소스 매핑 진행 중" },
+  mapped:   { color: "#3b82f6", label: "🟢 Mapped",     hint: "리소스 매핑 완료 — Plan 수립 가능" },
+  planning: { color: "#a855f7", label: "⚙️ Planning",   hint: "Terraform 모듈 + 데이터 이전 스크립트 생성 중" },
+  ready:    { color: "#16a34a", label: "✓ 수립 완료",   hint: "Terraform 모듈 + 스크립트 생성됨, Deploy 가능" },
 };
 
 function _formatRelative(ts) {
@@ -2006,6 +2027,27 @@ function _formatRelative(ts) {
   if (diff < 3600)  return `${Math.floor(diff / 60)}분 전`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
   return `${Math.floor(diff / 86400)}일 전`;
+}
+
+function _formatDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function _scanScopeLabel({ discovery_mode, resource_group, scoped_meta }) {
+  // scoped_meta: { resourceGroup, mode, tagFilters? }
+  const mode = discovery_mode || scoped_meta?.mode || "architecture";
+  const rg   = resource_group || scoped_meta?.resourceGroup;
+  if (rg) return `RG: ${rg}`;
+  const tags = scoped_meta?.tagFilters || scoped_meta?.tag_filters;
+  if (tags && typeof tags === "object") {
+    const pairs = Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(", ");
+    if (pairs) return `Tag: ${pairs}`;
+  }
+  if (mode === "tag") return "Tag (전체)";
+  return "전체 (architecture)";
 }
 
 function RowActionMenu({ items }) {
@@ -2096,26 +2138,28 @@ function RowActionMenu({ items }) {
 
 
 function PlansListView({
-  inProgressPlan,            // {status, scopedRows, scopedMeta, azureRegion, mappingComplete}
+  savedPlans,                // [{id, status, source_account, source_region, azure_region, resource_count, created_at, updated_at, name}]
   pastPlans,                 // [{run_id, has_terraform, terraform_file_count, ...}]
   loadingPast,
-  onOpenInProgress,
+  activePlanId,              // id of the saved plan tied to the current Discover→Plan handoff
+  mappingActive,             // bool — true while useAzureMapping is still running
+  onOpenSaved,               // (planId) => void
+  onDeleteSaved,             // (planId or [planIds]) => void
   onOpenPast,
   onDeletePast,              // (runId or [runIds]) => void
-  onClearInProgress,         // () => void  (clear React scope; can be undefined)
   onRefresh,
   onGoToDiscover,
 }) {
-  const hasInProgress = !!inProgressPlan && (inProgressPlan.scopedRows || []).length > 0;
+  const savedRows = savedPlans || [];
 
-  // Multi-select for bulk delete
+  // Multi-select for bulk delete (savedPlans only — pastPlans dirs aren't
+  // surfaced in this view, so they shouldn't be selectable either).
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   // Drop selections that no longer exist after a refresh
   useEffect(() => {
     setSelectedIds(prev => {
-      const valid = new Set((pastPlans || []).map(p => p.run_id));
-      valid.add(IN_PROGRESS_ID);
+      const valid = new Set(savedRows.map(s => s.id));
       let changed = false;
       const next = new Set();
       for (const id of prev) {
@@ -2124,7 +2168,7 @@ function PlansListView({
       }
       return changed ? next : prev;
     });
-  }, [pastPlans]);
+  }, [savedRows]);
 
   const toggle = (id) => {
     setSelectedIds(prev => {
@@ -2133,11 +2177,10 @@ function PlansListView({
       return next;
     });
   };
-  const allItemIds = useMemo(() => {
-    const ids = (pastPlans || []).map(p => p.run_id);
-    if (hasInProgress) ids.unshift(IN_PROGRESS_ID);
-    return ids;
-  }, [pastPlans, hasInProgress]);
+  const allItemIds = useMemo(
+    () => savedRows.map(s => s.id),
+    [savedRows],
+  );
 
   const toggleAll = () => {
     setSelectedIds(prev => {
@@ -2156,7 +2199,7 @@ function PlansListView({
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <strong style={{ fontSize: "0.95rem" }}>📋 마이그레이션 Plan 목록</strong>
         <span style={{ color: "var(--color-text-light)", fontSize: "0.78rem" }}>
-          {loadingPast ? "로드 중…" : `${(hasInProgress ? 1 : 0) + (pastPlans?.length || 0)}건`}
+          {loadingPast ? "로드 중…" : `${savedRows.length}건`}
         </span>
         <button type="button" onClick={onRefresh}
           style={{
@@ -2177,13 +2220,11 @@ function PlansListView({
             🗑 선택 {selectedIds.size}개 삭제
           </button>
         )}
-        {!hasInProgress && (
-          <button type="button" onClick={onGoToDiscover}
-            className="tab action-btn action-btn--secondary"
-            style={{ minHeight: 34, padding: "0 16px" }}>
-            ➜ Discover 단계로 이동 (리소스 선택)
-          </button>
-        )}
+        <button type="button" onClick={onGoToDiscover}
+          className="run-btn action-btn"
+          style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}>
+          ➕ Plan 생성
+        </button>
       </div>
 
       <div style={{
@@ -2194,7 +2235,7 @@ function PlansListView({
         {/* Header row */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
+          gridTemplateColumns: "32px 120px 1.6fr 1fr 1fr 1.4fr 0.7fr 130px",
           gap: 8, padding: "8px 14px",
           background: "var(--color-bg)",
           borderBottom: "1px solid var(--color-border)",
@@ -2206,114 +2247,79 @@ function PlansListView({
               checked={allChecked}
               ref={el => { if (el) el.indeterminate = someChecked; }}
               onChange={toggleAll}
-              disabled={(pastPlans || []).length === 0}
-              title="모든 과거 Plan 선택/해제"
+              disabled={allItemIds.length === 0}
+              title="모든 Plan 선택/해제"
             />
           </span>
           <span>상태</span>
-          <span>Plan / Run ID</span>
-          <span>소스 / 대상</span>
+          <span>이름</span>
+          <span>계정</span>
+          <span>리전</span>
+          <span>스캔 범위</span>
           <span>리소스</span>
           <span>생성</span>
-          <span style={{ textAlign: "center" }}>액션</span>
         </div>
 
-        {/* In-progress plan (current scope) */}
-        {hasInProgress && (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
-            gap: 8, padding: "10px 14px",
-            background: "rgba(59,130,246,0.04)",
-            borderBottom: "1px solid var(--color-border)",
-            fontSize: "0.8rem", alignItems: "center",
-          }}>
-            <span style={{ display: "flex", alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={selectedIds.has(IN_PROGRESS_ID)}
-                onChange={() => toggle(IN_PROGRESS_ID)}
-                title="작업 중인 Plan 선택"
-              />
-            </span>
-            <span title={PLAN_STATUS_META[inProgressPlan.status].hint} style={{
-              fontSize: "0.72rem", fontWeight: 700,
-              color: PLAN_STATUS_META[inProgressPlan.status].color,
-            }}>
-              {PLAN_STATUS_META[inProgressPlan.status].label}
-            </span>
-            <span>
-              <strong>(작업 중)</strong>
-              <div style={{ fontSize: "0.7rem", color: "var(--color-text-light)" }}>
-                저장 안됨 — 새로고침 시 사라질 수 있음
-              </div>
-            </span>
-            <span style={{ fontSize: "0.74rem" }}>
-              {inProgressPlan.scopedMeta?.account_id || "?"} / {inProgressPlan.scopedMeta?.region || "?"}
-              <div style={{ color: "var(--color-text-light)" }}>→ {inProgressPlan.azureRegion}</div>
-            </span>
-            <span style={{ fontSize: "0.74rem" }}>
-              {inProgressPlan.scopedRows.length}개
-            </span>
-            <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
-              지금
-            </span>
-            <RowActionMenu items={[
-              { label: "▶ 열기", onClick: onOpenInProgress },
-              { label: "🗑 비우기", danger: true,
-                onClick: () => onClearInProgress?.(),
-                disabled: !onClearInProgress },
-            ]} />
-          </div>
-        )}
+        {/* In-progress 행은 표시하지 않음 — Discovery → Plan handoff 시 자동으로
+            backend selected_plans 에 저장되므로 saved 행으로 즉시 보임. */}
 
-        {/* Past plans from disk (paginated) */}
-        {!loadingPast && visiblePastPlans.map(p => {
-          const checked = selectedIds.has(p.run_id);
+        {/* Saved Selected/Mapped plans (DB-backed) */}
+        {savedRows.map(s => {
+          const checked = selectedIds.has(s.id);
+          // Override the DB-stored status to "🔁 Mapping" while this row's
+          // mapping is still in flight (only for the currently-active row).
+          const effectiveStatus = (mappingActive && s.id === activePlanId) ? "mapping" : s.status;
+          const meta = PLAN_STATUS_META[effectiveStatus] || PLAN_STATUS_META.selected;
           return (
-            <div key={p.run_id} style={{
-              display: "grid",
-              gridTemplateColumns: "32px 120px 2fr 1.5fr 1fr 100px 60px",
-              gap: 8, padding: "10px 14px",
-              borderBottom: "1px solid var(--color-border)",
-              background: checked ? "rgba(220,38,38,0.04)" : "transparent",
-              fontSize: "0.8rem", alignItems: "center",
-            }}>
-              <span style={{ display: "flex", alignItems: "center" }}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggle(p.run_id)}
-                  title="선택해서 한꺼번에 삭제"
-                />
-              </span>
-              <span style={{
-                fontSize: "0.72rem", fontWeight: 700,
-                color: PLAN_STATUS_META.ready.color,
+            <div key={s.id}
+              onClick={() => onOpenSaved?.(s.id)}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "32px 120px 1.6fr 1fr 1fr 1.4fr 0.7fr 130px",
+                gap: 8, padding: "10px 14px",
+                borderBottom: "1px solid var(--color-border)",
+                background: checked ? "rgba(220,38,38,0.04)" : "transparent",
+                fontSize: "0.8rem", alignItems: "center",
+                cursor: "pointer",
               }}>
-                {PLAN_STATUS_META.ready.label}
+              <span style={{ display: "flex", alignItems: "center" }} onClick={e => e.stopPropagation()}>
+                <input type="checkbox" checked={checked} onChange={() => toggle(s.id)} />
               </span>
-              <code style={{ fontSize: "0.74rem", color: "var(--color-text)" }}>
-                {p.run_id}
-              </code>
-              <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
-                —
+              <span title={meta.hint} style={{
+                fontSize: "0.72rem", fontWeight: 700, color: meta.color,
+              }}>
+                {meta.label}
+              </span>
+              <span>
+                <strong>{s.name || `Plan-${(s.id || "").slice(0, 8)}`}</strong>
+              </span>
+              <span style={{ fontSize: "0.74rem", color: "var(--color-text-light)" }}>
+                {s.source_account || "—"}
+              </span>
+              <span style={{ fontSize: "0.74rem", color: "var(--color-text-light)" }}>
+                {s.source_region || "—"}
+              </span>
+              <span style={{ fontSize: "0.74rem", color: "var(--color-text-light)" }}>
+                {_scanScopeLabel({
+                  discovery_mode: s.discovery_mode,
+                  resource_group: s.resource_group,
+                  scoped_meta:    s.scoped_meta,
+                })}
               </span>
               <span style={{ fontSize: "0.74rem" }}>
-                {p.terraform_file_count ? `tf ${p.terraform_file_count}` : "—"}
+                {s.resource_count ?? 0}개
               </span>
               <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
-                {p.created_at ? _formatRelative(p.created_at) : "—"}
+                {_formatDate(s.updated_at || s.created_at)}
               </span>
-              <RowActionMenu items={[
-                { label: "📂 보기", onClick: () => onOpenPast(p.run_id) },
-                { label: "🗑 삭제", danger: true, onClick: () => onDeletePast(p.run_id) },
-              ]} />
             </div>
           );
         })}
 
-        {!loadingPast && !hasInProgress && (pastPlans || []).length === 0 && (
+        {/* Past plans from disk are intentionally hidden — savedPlans is the
+            canonical source of truth and shows the same rows with live status. */}
+
+        {!loadingPast && savedRows.length === 0 && (
           <div style={{
             padding: "24px 16px", textAlign: "center",
             fontSize: "0.85rem", color: "var(--color-text-light)",
@@ -2347,18 +2353,28 @@ function MigrationPage({
   mapping,
   onPlanCompleted,
   targetSubscriptionId = "",
+  currentPlanId = null,
+  setScopedRows,
+  setScopedMeta,
+  setArchitecture,
+  setCurrentPlanId,
+  seedMappingsRef,
+  shouldAutoResumeRef,
 }) {
   // viewMode: "list" (default) | "detail"
   // selectedRunId: when set, detail view shows that past plan (read-only); else
   // the in-progress (current scope) plan workflow.
   const [viewMode, setViewMode] = useState("list");
   const [selectedRunId, setSelectedRunId] = useState(null);
+  const [openPlanLabel, setOpenPlanLabel] = useState(null);   // human-readable name for detail header
 
   const [pastPlans, setPastPlans] = useState([]);
   const [loadingPast, setLoadingPast] = useState(false);
+  const [savedPlans, setSavedPlans] = useState([]);
 
-  // Confirm-delete modal state (replaces native browser confirm())
-  const [pendingDelete, setPendingDelete] = useState(null);   // run_id or null
+  // Confirm-delete modal state — pendingDelete can mix sentinel +
+  // saved-plan ids (uuid) + past run_ids (timestamp).
+  const [pendingDelete, setPendingDelete] = useState(null);
   const [deleteBusy, setDeleteBusy]       = useState(false);
   const [deleteError, setDeleteError]     = useState(null);
 
@@ -2374,18 +2390,21 @@ function MigrationPage({
     }
   }, []);
 
-  useEffect(() => { refreshPastPlans(); }, [refreshPastPlans]);
+  const refreshSavedPlans = useCallback(async () => {
+    try {
+      const res = await listSelectedPlans();
+      setSavedPlans(res.plans || []);
+    } catch {
+      setSavedPlans([]);
+    }
+  }, []);
 
-  // In-progress plan derived from current React state.
-  const inProgressPlan = useMemo(() => {
-    if (!scopedRows || scopedRows.length === 0) return null;
-    return {
-      scopedRows,
-      scopedMeta,
-      azureRegion,
-      status: mapping?.mappingComplete ? "mapped" : "selected",
-    };
-  }, [scopedRows, scopedMeta, azureRegion, mapping?.mappingComplete]);
+  useEffect(() => { refreshPastPlans(); }, [refreshPastPlans]);
+  useEffect(() => { refreshSavedPlans(); }, [refreshSavedPlans]);
+
+  // Plan creation only happens at the Discover→Plan handoff (handled in
+  // App.jsx).  Re-entering the Plan page just refreshes the saved-plans
+  // list — it never creates a new row.
 
   return (
     <section className="page-section">
@@ -2401,36 +2420,73 @@ function MigrationPage({
 
       {viewMode === "list" && (
         <PlansListView
-          inProgressPlan={inProgressPlan}
+          savedPlans={savedPlans}
           pastPlans={pastPlans}
           loadingPast={loadingPast}
-          onRefresh={refreshPastPlans}
+          activePlanId={currentPlanId}
+          mappingActive={!!mapping?.loading}
+          onRefresh={() => { refreshPastPlans(); refreshSavedPlans(); }}
           onGoToDiscover={onGoToDiscover}
-          onOpenInProgress={() => {
+          onOpenSaved={async (planId) => {
+            const sp = savedPlans.find(s => s.id === planId);
             setSelectedRunId(null);
+            setOpenPlanLabel(sp?.name || `Plan-${(planId || "").slice(0, 8)}`);
             setViewMode("detail");
+            // Hydrate App.jsx state from the persisted plan so useAzureMapping
+            // sees rows + seeded mappings.  This is what makes Mapping / Plan
+            // 수립 buttons usable after a browser refresh, AND lets the same
+            // mapping object continue running in the background as the user
+            // navigates between steps.
+            try {
+              const res = await getSelectedPlan(planId);
+              const plan = res?.plan || res || null;
+              if (plan) {
+                // 1. Pre-load the seed BEFORE rows update, so the hook's
+                //    reset effect can consume it on the same render cycle.
+                if (seedMappingsRef) seedMappingsRef.current = plan.mappings || null;
+                // 2. If DB says mapping was in progress, ask App.jsx to
+                //    auto-resume the run() once rows are visible to the hook.
+                if (shouldAutoResumeRef) {
+                  const total = (plan.scoped_rows || []).length;
+                  const done  = (plan.mappings || []).length;
+                  shouldAutoResumeRef.current = (plan.status === "mapping" && done < total);
+                }
+                if (plan.azure_region && setAzureRegion) setAzureRegion(plan.azure_region);
+                if (setScopedMeta)   setScopedMeta(plan.scoped_meta || null);
+                if (setArchitecture) setArchitecture(plan.architecture || null);
+                if (setScopedRows)   setScopedRows(plan.scoped_rows || []);
+                if (setCurrentPlanId) setCurrentPlanId(plan.id);
+                // 3. If Plan 수립 has already produced an output dir for this
+                //    plan (status="ready"), point RunMigrationForm at it via
+                //    preloadedRunId so the result panel renders immediately.
+                if (plan.plan_run_id) {
+                  setSelectedRunId(plan.plan_run_id);
+                }
+              }
+            } catch { /* fall back to whatever React state already has */ }
+          }}
+          onDeleteSaved={(ids) => {
+            const arr = Array.isArray(ids) ? ids : [ids];
+            setPendingDelete(arr);
+            setDeleteError(null);
           }}
           onOpenPast={(runId) => {
             setSelectedRunId(runId);
+            setOpenPlanLabel(`Plan-${runId.slice(-6)}`);
             setViewMode("detail");
           }}
           onDeletePast={(runIds) => {
-            // Accept either single id or an array (for bulk delete).
-            // The sentinel IN_PROGRESS_ID is mixed in when the in-progress
-            // row is selected — we surface it in the modal but it can't be
-            // sent to the backend (it lives only in React state).
             const ids = Array.isArray(runIds) ? runIds : [runIds];
             setPendingDelete(ids);
             setDeleteError(null);
           }}
-          onClearInProgress={undefined /* TODO: lift to App.jsx — clears scopedRows */}
         />
       )}
 
       {pendingDelete && pendingDelete.length > 0 && (() => {
-        const inProgressSelected = pendingDelete.includes(IN_PROGRESS_ID);
-        const realIds = pendingDelete.filter(id => id !== IN_PROGRESS_ID);
-        const totalCount = pendingDelete.length;
+        const savedIdSet = new Set(savedPlans.map(s => s.id));
+        const savedIds   = pendingDelete.filter(id => savedIdSet.has(id));
+        const totalCount = savedIds.length;
         return (
           <ConfirmModal
             title={totalCount === 1 ? "Plan 삭제" : `${totalCount}개 Plan 삭제`}
@@ -2439,29 +2495,21 @@ function MigrationPage({
             confirmLabel={totalCount === 1 ? "삭제" : `${totalCount}개 모두 삭제`}
             body={
               <>
-                {inProgressSelected && (
-                  <div style={{
-                    marginBottom: 10, padding: "6px 10px", fontSize: "0.78rem",
-                    background: "rgba(217,119,6,0.08)", border: "1px solid #d97706",
-                    borderRadius: "var(--radius-sm)",
-                  }}>
-                    ⚠ 작업 중(in-progress) Plan 도 선택됨 — 디스크에 저장된 적이 없어 일반
-                    삭제 대상이 아닙니다. 디스크 Plan만 삭제되고, 작업 중 Plan 은 Discover
-                    단계에서 직접 비워주세요.
-                  </div>
-                )}
-                {realIds.length > 0 && (
+                {savedIds.length > 0 && (
                   <>
                     <div style={{ marginBottom: 8 }}>
-                      다음 Plan{realIds.length > 1 ? "들" : ""}을 디스크에서 삭제합니다:
+                      다음 Plan 을 삭제합니다:
                     </div>
                     <ul style={{ margin: "6px 0 10px 18px", padding: 0, fontFamily: "monospace", fontSize: "0.78rem" }}>
-                      {realIds.map(id => <li key={id}>{id}</li>)}
+                      {savedIds.map(id => {
+                        const p = savedPlans.find(s => s.id === id);
+                        return <li key={id}>{p?.name || id.slice(0, 8)}</li>;
+                      })}
                     </ul>
                   </>
                 )}
                 <div style={{ fontSize: "0.78rem", color: "var(--color-text-light)", lineHeight: 1.5 }}>
-                  • terraform 모듈 / 데이터 이전 스크립트 / 로그 모두 제거됩니다.<br/>
+                  • Plan 메타데이터 + 매핑 결과 + 생성된 terraform 모듈 / 데이터 이전 스크립트가 모두 제거됩니다.<br/>
                   • 이 Plan 으로 이미 시작한 Deploy 는 그대로 유지됩니다.
                 </div>
                 {deleteError && (
@@ -2475,11 +2523,11 @@ function MigrationPage({
             onConfirm={async () => {
               setDeleteBusy(true); setDeleteError(null);
               const failed = [];
-              for (const id of realIds) {
-                try { await deletePlanOutput(id); }
-                catch (e) { failed.push(`${id}: ${e.message || e}`); }
+              if (savedIds.length > 0) {
+                try { await bulkDeleteSelectedPlans(savedIds); }
+                catch (e) { failed.push(`(saved bulk): ${e.message || e}`); }
               }
-              await refreshPastPlans();
+              await Promise.all([refreshPastPlans(), refreshSavedPlans()]);
               setDeleteBusy(false);
               if (failed.length === 0) {
                 setPendingDelete(null);
@@ -2493,9 +2541,9 @@ function MigrationPage({
 
       {viewMode === "detail" && (
         <div>
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <button type="button"
-              onClick={() => { setViewMode("list"); setSelectedRunId(null); refreshPastPlans(); }}
+              onClick={() => { setViewMode("list"); setSelectedRunId(null); setOpenPlanLabel(null); refreshPastPlans(); refreshSavedPlans(); }}
               style={{
                 background: "none", border: "1px solid var(--color-border)",
                 color: "var(--color-text-light)", borderRadius: "var(--radius-sm)",
@@ -2503,9 +2551,12 @@ function MigrationPage({
               }}>
               ← Plan 목록
             </button>
+            <strong style={{ fontSize: "0.95rem" }}>
+              📋 {openPlanLabel || "(이름 없음)"}
+            </strong>
             {selectedRunId && (
-              <span style={{ marginLeft: 10, fontSize: "0.82rem", color: "var(--color-text-light)" }}>
-                Plan: <code>{selectedRunId}</code> (보기 모드 — mapping/생성은 새 작업에서)
+              <span style={{ fontSize: "0.78rem", color: "var(--color-text-light)" }}>
+                <code>{selectedRunId}</code> · 보기 모드
               </span>
             )}
           </div>
@@ -2524,9 +2575,11 @@ function MigrationPage({
             onPlanCompleted={() => {
               onPlanCompleted?.();
               refreshPastPlans();
+              refreshSavedPlans();
             }}
             targetSubscriptionId={targetSubscriptionId}
             preloadedRunId={selectedRunId}
+            currentPlanId={currentPlanId}
           />
         </div>
       )}
@@ -2549,30 +2602,57 @@ function RunMigrationForm({
   onPlanCompleted,
   targetSubscriptionId = "",
   preloadedRunId = null,
+  currentPlanId = null,
 }) {
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
   const [prepMessage, setPrepMessage] = useState(null);
 
+  // Latest onPlanCompleted via ref so pollStatus doesn't re-create each render
+  // (which would re-fire the [jobId, pollStatus] effect into an infinite poll).
+  const onPlanCompletedRef = useRef(onPlanCompleted);
+  useEffect(() => { onPlanCompletedRef.current = onPlanCompleted; }, [onPlanCompleted]);
+  // Track which jobIds we've already notified completion for, so the
+  // refresh→re-poll cycle doesn't spam the parent's onPlanCompleted.
+  const completedNotifiedRef = useRef(new Set());
+
   const pollStatus = useCallback(() => {
     if (!jobId) return;
     getMigrationStatus(jobId)
       .then((res) => {
         setStatus(res);
+        setError(null);  // a successful poll clears any stale error
         if (res.status === "pending" || res.status === "running") {
           setTimeout(pollStatus, 2000);
+          return;
         }
-        if (res.status === "completed") {
-          onPlanCompleted?.();
+        if (res.status === "completed" && !completedNotifiedRef.current.has(jobId)) {
+          completedNotifiedRef.current.add(jobId);
+          // Persist final status on the saved-plan row (best-effort)
+          if (currentPlanId) {
+            updateSelectedPlan(currentPlanId, { status: "ready" }).catch(() => {});
+          }
+          onPlanCompletedRef.current?.();
         }
       })
-      .catch(() => setError("상태 갱신에 실패했습니다"));
-  }, [jobId, onPlanCompleted]);
+      .catch((e) => {
+        // Job already cleaned up by the backend (e.g. after completion) is
+        // an expected 404 — don't surface it as a user-visible error.
+        const msg = (e?.message || "").toLowerCase();
+        if (msg.includes("not found") || msg.includes("404")) return;
+        setError("상태 갱신에 실패했습니다");
+      });
+  // Intentionally NOT depending on onPlanCompleted — see ref above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, currentPlanId]);
 
   useEffect(() => {
     if (jobId) pollStatus();
-  }, [jobId, pollStatus]);
+  // Only re-trigger when the job id itself changes — pollStatus identity is
+  // already keyed off jobId via useCallback.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
 
   // Preloaded view-only mode: when the user clicks "📂 보기" on a past plan
   // in the list, fetch its persisted output and render it as a completed run.
@@ -2620,6 +2700,13 @@ function RunMigrationForm({
     setStatus(null);
     setPrepMessage(null);
 
+    // Eagerly persist "planning" intent BEFORE any awaits — so even an
+    // immediate refresh after click leaves the DB row showing "⚙️ Planning"
+    // in the Plan list.  PATCH uses keepalive so it survives page unload.
+    if (currentPlanId) {
+      updateSelectedPlan(currentPlanId, { status: "planning" }).catch(() => {});
+    }
+
     // Step 1 — ensure per-resource AWS→Azure mappings exist for the current
     // scope.  This is the same call the "Mapping" button makes; we reuse the
     // cache if the user already ran it.  Feeding these to the planner keeps
@@ -2655,6 +2742,10 @@ function RunMigrationForm({
         target_subscription_id: targetSubscriptionId,
         migration_goals: goals.trim(),
         azure_mappings: mappingsForPlanner,
+        // Backend uses this to authoritatively flip the savedPlan row to
+        // "planning" (on start) and "ready" (on completion) — independent
+        // of the frontend polling state.  Survives page refresh.
+        selected_plan_id: currentPlanId,
       });
       setJobId(res.job_id);
     } catch (e) {
@@ -2729,13 +2820,16 @@ function RunMigrationForm({
               className="run-btn action-btn"
               type="button"
               onClick={handleRun}
-              disabled={isRunning || mapping.loading || !awsSpec.trim()}
+              disabled={isRunning || mapping.loading || !awsSpec.trim() || !mapping.mappingComplete}
               style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}
+              title={!mapping.mappingComplete ? "먼저 Mapping 을 완료해주세요" : ""}
             >
               {mapping.loading && !isRunning ? (
                 <><span className="spinner" />Mapping…</>
               ) : isRunning ? (
                 <><span className="spinner" />{status?.status === "running" ? "수립 중…" : "시작 중…"}</>
+              ) : !mapping.mappingComplete ? (
+                <>🚀 Plan 수립</>
               ) : (
                 <>🚀 Plan 수립</>
               )}
