@@ -9,18 +9,11 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .code_generator import generate_terraform_code
 from .context import MigrationContext
-from .generators import (
-    generate_compute_module,
-    generate_database_module,
-    generate_networking_module,
-    generate_root_module,
-    generate_storage_module,
-)
 from .schema import DataMigrationScript, MigrationPlanV2, TerraformModule
 from .strategy import generate_strategy
 from .validator import validate_terraform, write_modules_to_disk
@@ -143,26 +136,29 @@ def run_migration_v2(
     strategy = generate_strategy(ctx, llm_deployment, azure_openai_endpoint)
     pipeline_log.append(f"  • {time.time() - t0:.1f}s — waves={len(strategy.waves)}, risks={len(strategy.risks)}")
 
-    # ── Step 2: Module generation (parallel, deterministic) ───────
-    pipeline_log.append("Step 2/5: Terraform module generators (병렬, LLM 없음)")
+    # ── Step 2: Terraform 코드 생성 (LLM) ─────────────────────────
+    # 매핑 + 정책 + 메모를 모두 보고 LLM 이 root + sub-modules 를 한 번에 작성.
+    # 결정론적 generators 는 더 이상 호출되지 않음 (코드는 남겨둠 — rollback 용).
+    pipeline_log.append("Step 2/5: Terraform 코드 생성 (LLM codegen, 단일 호출)")
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f_net  = pool.submit(generate_networking_module, ctx)
-        f_comp = pool.submit(generate_compute_module, ctx)
-        f_db   = pool.submit(generate_database_module, ctx)
-        f_stor = pool.submit(generate_storage_module, ctx)
-        modules: List[TerraformModule] = [f_net.result(), f_comp.result(), f_db.result(), f_stor.result()]
-    pipeline_log.append(f"  • {time.time() - t0:.2f}s — {len(modules)}개 모듈 생성")
-    for m in modules:
-        n_files = len(m.files or {})
-        n_outputs = len(m.outputs or [])
-        pipeline_log.append(f"    - {m.name}: {n_files} files, {n_outputs} outputs")
-
-    # ── Step 3: Root wiring ───────────────────────────────────────
-    pipeline_log.append("Step 3/5: Root module 와이어링")
-    t0 = time.time()
-    root = generate_root_module(ctx, modules)
-    pipeline_log.append(f"  • {time.time() - t0:.2f}s — root: {len(root.files)} files")
+    try:
+        root, modules, codegen_log = generate_terraform_code(
+            ctx,
+            strategy=strategy,
+            llm_deployment=llm_deployment,
+            azure_openai_endpoint=azure_openai_endpoint,
+        )
+        for line in codegen_log:
+            pipeline_log.append(f"  · {line}")
+        pipeline_log.append(
+            f"  • {time.time() - t0:.1f}s — root({len(root.files)} files) + {len(modules)} modules"
+        )
+    except Exception as e:
+        pipeline_log.append(f"  • LLM codegen 실패 (해당 plan 의 terraform 미생성): {e}")
+        # Surface a minimal empty plan rather than crashing the whole pipeline;
+        # validate step will mark validation_passed=False.
+        root = TerraformModule(name="root", files={}, inputs=[], outputs=[])
+        modules = []
 
     # ── Step 3.5: Policy compliance LLM pass (modify/append 정책 반영) ──
     field_ops = (ctx.policy_constraints or {}).get("field_operations") or []
