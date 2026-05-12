@@ -130,6 +130,39 @@ def run_migration_v2(
     elif not ctx.target_subscription_id:
         pipeline_log.append("Step 0/5: Azure Policy 제약 추출 — 건너뜀 (target_subscription_id 미설정)")
 
+    # ── Step 0.5: Filter by user-selected policies ──────────────
+    # The Policy Guidance Review panel lets the user pick which enforced
+    # policies actually apply to this plan.  Anything not selected is
+    # stripped from policy_constraints BEFORE strategy / codegen see it.
+    if isinstance(ctx.policy_constraints, dict) and not ctx.policy_constraints.get("error"):
+        try:
+            from .policy_guidance import selected_policy_ids
+            selected = set(selected_policy_ids())
+            before_modify = len(ctx.policy_constraints.get("field_operations") or [])
+            before_deny   = len(ctx.policy_constraints.get("manual_review")    or [])
+            if selected:
+                ctx.policy_constraints["field_operations"] = [
+                    op for op in (ctx.policy_constraints.get("field_operations") or [])
+                    if (op.get("policy_definition_id") or "") in selected
+                ]
+                ctx.policy_constraints["manual_review"] = [
+                    d for d in (ctx.policy_constraints.get("manual_review") or [])
+                    if (d.get("policy_definition_id") or "") in selected
+                ]
+            else:
+                # No user-selected policies → don't feed any to LLMs.  User
+                # explicitly opted to skip the policy step.
+                ctx.policy_constraints["field_operations"] = []
+                ctx.policy_constraints["manual_review"]    = []
+            after_modify = len(ctx.policy_constraints.get("field_operations") or [])
+            after_deny   = len(ctx.policy_constraints.get("manual_review")    or [])
+            pipeline_log.append(
+                f"Step 0.5/5: 사용자 선택 정책 필터링 — "
+                f"MODIFY {before_modify}→{after_modify}, DENY {before_deny}→{after_deny}"
+            )
+        except Exception as e:
+            pipeline_log.append(f"  · 선택 필터 적용 실패 (전체 정책 사용): {e}")
+
     # ── Step 1: Strategy (LLM) ────────────────────────────────────
     pipeline_log.append("Step 1/5: Strategy (LLM 1회)")
     t0 = time.time()

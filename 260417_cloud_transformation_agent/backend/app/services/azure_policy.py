@@ -944,12 +944,15 @@ def extract_constraints(subscription_id: str) -> Dict[str, Any]:
             if not ops:
                 continue
             field_operations.append({
-                "policy_name": r.get("policyName"),
-                "azure_type":  rt if rt != "Unknown" else None,
-                "effect":      "modify",
-                "operations":  ops,
-                "scope":       r.get("scope"),
-                "source":      "enforced_assignment",
+                "policy_name":          r.get("policyName"),
+                "policy_definition_id": r.get("policyDefinitionId"),
+                "assignment_id":        r.get("assignmentId"),
+                "description":          r.get("description"),
+                "azure_type":           rt if rt != "Unknown" else None,
+                "effect":               "modify",
+                "operations":           ops,
+                "scope":                r.get("scope"),
+                "source":               "enforced_assignment",
             })
             type_targets.append(rt)
 
@@ -977,15 +980,19 @@ def extract_constraints(subscription_id: str) -> Dict[str, Any]:
                         pass
 
             manual_review.append({
-                "name":         r.get("policyName"),
-                "effect":       "deny",
-                "resourceType": rt,
-                "rule":         f"DENY {rt}: " + ", ".join(
+                "name":                 r.get("policyName"),
+                "policy_definition_id": r.get("policyDefinitionId"),
+                "assignment_id":        r.get("assignmentId"),
+                "description":          r.get("description"),
+                "effect":               "deny",
+                "resourceType":         rt,
+                "rule":                 f"DENY {rt}: " + ", ".join(
                     f'{c.get("field")} {c.get("operator")} {c.get("value")}'
                     for c in (r.get("conditions") or [])[:4]
                 ),
-                "scope":        r.get("scope"),
-                "source":       "enforced_assignment",
+                "conditions":           r.get("conditions") or [],
+                "scope":                r.get("scope"),
+                "source":               "enforced_assignment",
             })
 
     # Diagnostics

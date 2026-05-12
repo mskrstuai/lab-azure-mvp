@@ -86,13 +86,17 @@ Terraform 코드를 작성합니다.
    ``main.tf`` (resource_group + module 호출) + ``variables.tf`` (공통 변수)
    + ``outputs.tf``.  ``README.md`` 권장.
 
-4. **정책 강제 반영.**  입력의 ``policy_modify`` / ``policy_deny`` 와 각
-   정책의 ``user_note`` (자연어 메모) 와 ``general_notes`` 를 모두 읽고
-   코드에 직접 반영하세요.  예시:
+4. **정책 강제 반영.**  입력의 ``policy_modify`` / ``policy_deny`` 항목과
+   각 정책에 매핑된 ``guidance: [...]`` (사용자가 사전 검토하고 저장한 자연어
+   지침 배열), 그리고 입력의 최상위 ``general_guidance: [...]`` (모든 정책 /
+   모든 plan 에 공통 적용되는 전역 지침) 을 모두 읽고 코드에 직접 반영하세요.
    • ``properties.allowSharedKeyAccess = false`` 정책 →
      ``shared_access_key_enabled = false`` 를 storage account 블록에 추가.
-   • 메모가 cascading 효과 (provider 블록에 storage_use_azuread 등) 를
-     알려주면 그것도 반영.
+   • 정책 ``guidance`` 또는 ``general_guidance`` 에 cascading 효과 (provider
+     블록의 storage_use_azuread 등) 가 적혀있으면 그것도 반영.
+   • 같은 정책의 ``guidance`` 가 여러 줄이면 모두 종합적으로 고려.
+   • ``general_guidance`` 는 정책 단위가 아닌 cross-cutting 규칙 — 모든
+     리소스에 적용되는 명명 규칙, 태그 정책, 보안 기본값 등에 쓰입니다.
 
 5. **azurerm attribute 이름은 정확히 snake_case.**  ARM property name
    (camelCase) 이 아님.  확실하지 않은 attribute 는 만들지 마세요.
@@ -286,15 +290,18 @@ def _trim_mappings(mappings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _annotate_policies(
+def _annotate_policies_with_guidance(
     field_ops: List[Dict[str, Any]],
     deny_rules: List[Dict[str, Any]],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
-    """Attach per-policy + general user notes (if the notes service exists)."""
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Attach per-policy guidance entries (from the policy_guidance store) to
+    each MODIFY / DENY entry under ``guidance: [text, ...]``.  Missing
+    guidance just leaves the field absent — the LLM still sees the raw policy
+    JSON in either case."""
     try:
-        from . import policy_notes as notes_svc
+        from . import policy_guidance as svc
     except Exception:
-        return field_ops, deny_rules, []
+        return field_ops, deny_rules
 
     pid_set: List[str] = []
     for op in field_ops:
@@ -305,24 +312,25 @@ def _annotate_policies(
         pid = d.get("policy_definition_id")
         if pid:
             pid_set.append(pid)
-    per_policy = notes_svc.notes_for_policies(pid_set)
-    general    = notes_svc.general_notes_text()
+    payload = svc.build_guidance_payload(pid_set)
 
-    out_modify = []
+    out_modify: List[Dict[str, Any]] = []
     for op in field_ops:
         item = dict(op)
-        note = per_policy.get(op.get("policy_definition_id") or "")
-        if note:
-            item["user_note"] = note
+        pid = op.get("policy_definition_id") or ""
+        bucket = payload.get(pid)
+        if bucket and bucket.get("entries"):
+            item["guidance"] = bucket["entries"]
         out_modify.append(item)
-    out_deny = []
+    out_deny: List[Dict[str, Any]] = []
     for d in deny_rules:
         item = dict(d)
-        note = per_policy.get(d.get("policy_definition_id") or "")
-        if note:
-            item["user_note"] = note
+        pid = d.get("policy_definition_id") or ""
+        bucket = payload.get(pid)
+        if bucket and bucket.get("entries"):
+            item["guidance"] = bucket["entries"]
         out_deny.append(item)
-    return out_modify, out_deny, general
+    return out_modify, out_deny
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -348,7 +356,14 @@ def generate_terraform_code(
     pc = ctx.policy_constraints or {}
     field_ops  = pc.get("field_operations") or []
     deny_rules = pc.get("manual_review")    or []
-    modify_annotated, deny_annotated, general_notes = _annotate_policies(field_ops, deny_rules)
+    modify_annotated, deny_annotated = _annotate_policies_with_guidance(field_ops, deny_rules)
+
+    # Top-level general guidance entries — apply to every policy / every plan.
+    try:
+        from . import policy_guidance as guidance_svc
+        general_entries = guidance_svc.general_entry_texts()
+    except Exception:
+        general_entries = []
 
     payload = {
         "aws_architecture":  _trim_arch(ctx.architecture or {}),
@@ -358,9 +373,14 @@ def generate_terraform_code(
         "strategy_summary":  (strategy.summary if strategy else "") or "",
         "strategy_waves":    [{"order": w.order, "name": w.name, "description": w.description}
                               for w in (strategy.waves if strategy else [])],
+        # Each policy carries a ``guidance: [text, ...]`` field (when entries
+        # exist in the policy_guidance store) — these are the user-curated /
+        # AI-drafted code-generation hints they reviewed before plan run.
         "policy_modify":     modify_annotated,
         "policy_deny":       deny_annotated,
-        "general_notes":     general_notes,
+        # General (non-policy-specific) guidance — injected as cross-cutting
+        # rules in every codegen.  Examples: "모든 리소스에 tags = var.tags".
+        "general_guidance":  general_entries,
         "required_tags":     pc.get("required_tags") or [],
         "tag_defaults":      pc.get("tag_defaults") or {},
         "allowed_locations": pc.get("allowed_locations") or [],

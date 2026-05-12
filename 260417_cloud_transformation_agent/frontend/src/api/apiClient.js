@@ -1,5 +1,135 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
+/* ============== Policy guidance (per-policy entries history) ============== */
+
+export async function discoverRelevantPolicies({ subscriptionId, azureTypes }) {
+  const res = await fetch(`${API_BASE}/policy-review/discover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      subscription_id: subscriptionId || "",
+      azure_types:     azureTypes || [],
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "정책 검토 데이터 조회 실패");
+  return data;
+}
+
+// All policy-guidance endpoints take policy_definition_id in the body (or
+// query string) — ARM policy ids contain forward slashes that confuse URL
+// path routing on the server.  Sending them in the body sidesteps that.
+
+export async function addPolicyGuidanceEntry(policyDefinitionId, { text, source = "user", policyName = "" } = {}) {
+  const res = await fetch(`${API_BASE}/policy-guidance/entries`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      policy_definition_id: policyDefinitionId,
+      text, source, policy_name: policyName,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "지침 추가 실패");
+  return data;
+}
+
+export async function updatePolicyGuidanceEntry(policyDefinitionId, entryId, text) {
+  const res = await fetch(
+    `${API_BASE}/policy-guidance/entries/${encodeURIComponent(entryId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policy_definition_id: policyDefinitionId, text }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "지침 수정 실패");
+  return data;
+}
+
+export async function deletePolicyGuidanceEntry(policyDefinitionId, entryId) {
+  const qs = `?policy_definition_id=${encodeURIComponent(policyDefinitionId)}`;
+  const res = await fetch(
+    `${API_BASE}/policy-guidance/entries/${encodeURIComponent(entryId)}${qs}`,
+    { method: "DELETE" },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "지침 삭제 실패");
+  return data;
+}
+
+export async function setPolicyGuidanceSelected(policyDefinitionId, selected, policyName = "") {
+  const res = await fetch(`${API_BASE}/policy-guidance/selected`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      policy_definition_id: policyDefinitionId,
+      selected: !!selected,
+      policy_name: policyName,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "정책 선택 상태 저장 실패");
+  return data;
+}
+
+/* ----- General (cross-cutting) guidance entries ----- */
+
+export async function listGeneralGuidance() {
+  const res = await fetch(`${API_BASE}/policy-guidance/general-entries`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "전역 지침 조회 실패");
+  return data;
+}
+
+export async function addGeneralGuidance(text) {
+  const res = await fetch(`${API_BASE}/policy-guidance/general-entries`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "전역 지침 추가 실패");
+  return data;
+}
+
+export async function updateGeneralGuidance(entryId, text) {
+  const res = await fetch(`${API_BASE}/policy-guidance/general-entries/${encodeURIComponent(entryId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "전역 지침 수정 실패");
+  return data;
+}
+
+export async function deleteGeneralGuidance(entryId) {
+  const res = await fetch(`${API_BASE}/policy-guidance/general-entries/${encodeURIComponent(entryId)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "전역 지침 삭제 실패");
+  return data;
+}
+
+
+export async function draftPolicyGuidance(policyDefinitionId, { rawPolicy, scopeResourceTypes = [] } = {}) {
+  const res = await fetch(`${API_BASE}/policy-guidance/draft`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      policy_definition_id: policyDefinitionId,
+      raw_policy:           rawPolicy,
+      scope_resource_types: scopeResourceTypes,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "AI 초안 생성 실패");
+  return data;
+}
+
 export async function startMigrationPlan(params) {
   const res = await fetch(`${API_BASE}/migration/run`, {
     method: "POST",

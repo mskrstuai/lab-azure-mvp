@@ -1,0 +1,144 @@
+{
+  "schema_version": 2,
+  "policies": {
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/StorageAccount_DisableLocalAuth_Modify": {
+      "policy_name": "SFI-ID4.2.1 Storage Accounts - Safe Secrets Standard",
+      "entries": [
+        {
+          "id": "9a06d7be-49e0-4f57-8b33-1e394a1b8448",
+          "text": "이 정책으로 storage account 의 allowSharedKeyAccess 가 false 가 되면, 단순히 리소스 블록에 shared_access_key_enabled = false 만 넣어선 안 됩니다.  함께 반영해야 할 것:\n  • providers.tf 의 provider \"azurerm\" 블록에 storage_use_azuread = true 추가 (없으면 terraform 의 storage data plane 작업이 shared key 로 시도되어 실패).\n  • azurerm_storage_container 등 data-plane 리소스가 있으면, storage_account_name 대신 storage_account_id 로 참조 (provider v4+).\n  • README 에 \"사용자/SP 에 'Storage Blob Data Contributor' RBAC 필요\" 한 줄 안내.",
+          "source": "default",
+          "created_at": 1778549562.424872,
+          "updated_at": 1778549562.424872
+        }
+      ],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/ServiceBus_DisableLocalAuth_Modify": {
+      "policy_name": "SFI-ID4.3.3 Service Bus - Safe Secrets Standard",
+      "entries": [
+        {
+          "id": "7d0a05a6-3905-462b-95ac-42628e1eca9d",
+          "text": "이 정책으로 disableLocalAuth 가 true 가 되면, 대응하는 terraform attribute 는 local_auth_enabled = false 입니다 (값 반전).  데이터플레인 접근은 Azure AD 토큰으로 인증해야 하므로 README 에 \"클라이언트는 Azure AD 토큰으로 인증해야 함\" 한 줄 추가.",
+          "source": "default",
+          "created_at": 1778549562.428489,
+          "updated_at": 1778549562.428489
+        }
+      ],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/EventHub_DisableLocalAuth_Modify": {
+      "policy_name": "SFI-ID4.3.2 Event Hub - Safe Secrets Standard",
+      "entries": [
+        {
+          "id": "f98f38bf-31c3-4298-af58-d008a86fa96e",
+          "text": "이 정책으로 disableLocalAuth 가 true 가 되면, 대응하는 terraform attribute 는 local_auth_enabled = false 입니다 (값 반전).  데이터플레인 접근은 Azure AD 토큰으로 인증해야 하므로 README 에 \"클라이언트는 Azure AD 토큰으로 인증해야 함\" 한 줄 추가.",
+          "source": "default",
+          "created_at": 1778549562.434613,
+          "updated_at": 1778549562.434613
+        }
+      ],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/StorageAccount_BlobAnonymousAccess_Modify": {
+      "policy_name": "Ensure secure access to storage account containers",
+      "entries": [
+        {
+          "id": "12cf3838-0579-4b12-a74a-103993bc39aa",
+          "text": "이 정책으로 storage account 의 allowBlobPublicAccess 가 false 가 되면, 같은 plan 의 모든 azurerm_storage_container 의 container_access_type 은 \"private\" 으로 강제하세요.  현재 코드에 \"public\" 이나 \"blob\" 값이 있으면 \"private\" 로 교체.",
+          "source": "default",
+          "created_at": 1778549562.440971,
+          "updated_at": 1778549562.440971
+        }
+      ],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/CosmosDB_LocalAuth_Modify": {
+      "policy_name": "SFI-ID4.2.3 Cosmos DB - Safe Secrets Standard",
+      "entries": [
+        {
+          "id": "7ef13576-362d-41c1-a147-99e57ee63f97",
+          "text": "이 정책으로 disableLocalAuth 가 true 가 되면, 대응하는 terraform attribute 는 local_auth_enabled = false 입니다 (값 반전).  데이터플레인 접근은 Azure AD 토큰으로 인증해야 하므로 README 에 \"클라이언트는 Azure AD 토큰으로 인증해야 함\" 한 줄 추가.",
+          "source": "default",
+          "created_at": 1778549562.445792,
+          "updated_at": 1778549562.445792
+        }
+      ],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/VirtualMachine_ManagedIdentity_Deploy": {
+      "policy_name": "Add system-assigned managed identity to enable Guest Configuration assignments on virtual machines with no identities",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/VirtualMachine_ManagedIdentityonUserIdentity_Deploy": {
+      "policy_name": "Add system-assigned managed identity to enable Guest Configuration assignments on VMs with a user-assigned identity",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/AIFoundryHub_PublicNetwork_Modify": {
+      "policy_name": "AIFoundryHubPublicNetworkModify",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/AzureOpenAI_ProvisionedCapacity_Deny": {
+      "policy_name": "Block Azure OpenAI Provisioned Capacity",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/3015ca64-8f77-4f13-831f-46add952c7cd": {
+      "policy_name": "Block Azure RM Resource Creation",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/Sentinel_Commitment_Deny": {
+      "policy_name": "Block Azure Sentinel Commitment over 100",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/VirtualMachine_SKU_Deny": {
+      "policy_name": "Block VM SKU Sizes",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/AKS_LimitNodeCount_Deny": {
+      "policy_name": "Deny AKS deployment with agent pool count greater than 10",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/KeyVaultManagedHSM_PurgeProtectionEnabled_Deny": {
+      "policy_name": "Deny Azure Key Vault Managed HSM with Purge Protection Enabled",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/VMSS_LimitNodesCount_Deny": {
+      "policy_name": "Deny VMSS deployment with instance count greater than 10",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Authorization/policyDefinitions/6c112d4e-5bc7-47ae-a041-ea2d9dccd749": {
+      "policy_name": "Not allowed resource types",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/AzureSQL_WithoutAzureADOnlyAuthentication_Deny": {
+      "policy_name": "SFI-ID4.2.2 SQL DB - Safe Secrets Standard",
+      "entries": [],
+      "selected": true
+    },
+    "/providers/Microsoft.Management/managementGroups/ccfe3d95-13b0-45fd-8bd5-376936157d1f/providers/Microsoft.Authorization/policyDefinitions/AzureSQLMI_WithoutAzureADOnlyAuthentication_Deny": {
+      "policy_name": "SFI-ID4.2.4 SQL Managed Instance - Safe Secrets Standard",
+      "entries": [],
+      "selected": true
+    }
+  },
+  "general_entries": [
+    {
+      "id": "e1b67b45-0d54-4f0c-ab19-ad7f178af12e",
+      "text": "[VM 키 페어 가이드]\n  - AWS .pem 키나 사용자 입력 SSH 키를 가져와 쓰지 않고, terraform 안에서 새 키  페어를 만들어 사용.\n  - 추천 패턴 (구체 HCL 예시 포함):\n    - tls_private_key.<vm_label>_ssh — 4096-bit RSA 키 페어 생성.\n    - azurerm_ssh_public_key.<vm_label>_ssh — Azure 콘솔에서 조회/재사용 가능한\n   리소스로 등록 (선택).\n    - azurerm_linux_virtual_machine.<vm_label> 의 admin_ssh_key { username =\n  \"azureuser\", public_key = tls_private_key...public_key_openssh } +\n  disable_password_authentication = true.\n    - output \"<vm_label>_private_key_pem\" sensitive = true 로 private key 노출.\n  - 보조 지침:\n    - providers.tf 에 tls ~> 4.0 provider 추가 required.\n    - Windows VM 은 random_password 로 admin_password 생성 + sensitive output.\n    - 여러 VM 이면 각자 별도 키 페어 — 공유 금지.",
+      "source": "user",
+      "created_at": 1778550111.213705,
+      "updated_at": 1778550218.7996879
+    }
+  ]
+}

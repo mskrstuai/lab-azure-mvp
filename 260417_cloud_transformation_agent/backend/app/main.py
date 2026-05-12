@@ -17,7 +17,7 @@ for _noisy in ("azure.identity", "azure.core.pipeline.policies.http_logging_poli
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import architecture, aws_resources, credentials, deploy, migration, plan
+from .routers import architecture, aws_resources, credentials, deploy, migration, plan, policy_guidance
 
 app = FastAPI(title="Cloud Transformation Agent API")
 
@@ -36,6 +36,8 @@ app.include_router(plan.router, prefix="/api")
 app.include_router(deploy.router, prefix="/api")
 app.include_router(migration.router, prefix="/api")
 app.include_router(aws_resources.router, prefix="/api")
+app.include_router(policy_guidance.router, prefix="/api")
+app.include_router(policy_guidance.review_router, prefix="/api")
 
 
 @app.get("/health")

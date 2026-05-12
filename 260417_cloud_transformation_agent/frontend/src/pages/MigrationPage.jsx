@@ -5,6 +5,16 @@ import {
   getActiveMigrationJob,
   fetchAzureMappings,
   fetchMigrationOutputs,
+  discoverRelevantPolicies,
+  addPolicyGuidanceEntry,
+  updatePolicyGuidanceEntry,
+  deletePolicyGuidanceEntry,
+  draftPolicyGuidance,
+  setPolicyGuidanceSelected,
+  listGeneralGuidance,
+  addGeneralGuidance,
+  updateGeneralGuidance,
+  deleteGeneralGuidance,
   deletePlanOutput,
   generateDataMigrationScripts,
   listSelectedPlans,
@@ -2587,6 +2597,729 @@ function MigrationPage({
   );
 }
 
+/** Gate panel between mapping and Plan 수립 — same panel shell as the
+ *  "리소스 매핑" / "Plan 수립" panels.  User clicks "정책 조회" to fetch
+ *  the subscription's enforced policies, picks which apply via checkbox,
+ *  and writes guidance entries for each.  Plan 수립 button is gated until
+ *  every *selected* policy has ≥1 entry. */
+function PolicyGuidanceReview({ subscriptionId, mappings, mappingComplete, onReviewComplete }) {
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState(null);
+  const [openPid, setOpenPid]   = useState(null);
+  // Optimistic per-row selection — flips on click before server roundtrip.
+  const [localSelected, setLocalSelected] = useState({});
+  // Track in-flight toggles so user can spam checkboxes without race
+  const [busyPids, setBusyPids] = useState(new Set());
+  // General (cross-cutting) guidance entries
+  const [generalEntries, setGeneralEntries] = useState([]);
+  // Pagination state
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 10;
+
+  const azureTypes = useMemo(() => {
+    const set = new Set();
+    for (const m of (mappings || [])) {
+      const t = m?.azure_resource_type || m?.azure_type;
+      if (t) set.add(t);
+    }
+    return Array.from(set).sort();
+  }, [mappings]);
+
+  const refresh = useCallback(async () => {
+    if (!subscriptionId) return;
+    setLoading(true); setError(null);
+    try {
+      const [res, gen] = await Promise.all([
+        discoverRelevantPolicies({ subscriptionId, azureTypes }),
+        listGeneralGuidance().catch(() => ({ entries: [] })),
+      ]);
+      setData(res);
+      setGeneralEntries(gen.entries || []);
+      setLocalSelected({});
+      setPage(0);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [subscriptionId, azureTypes]);
+
+  const refreshGeneral = useCallback(async () => {
+    try {
+      const gen = await listGeneralGuidance();
+      setGeneralEntries(gen.entries || []);
+    } catch { /* silent */ }
+  }, []);
+
+  // Reconcile server `selected` with optimistic local overrides.
+  const policiesView = useMemo(() => {
+    const items = data?.policies || [];
+    return items.map(p => {
+      const pid = p.policy_definition_id || "";
+      const overridden = Object.prototype.hasOwnProperty.call(localSelected, pid);
+      return { ...p, _pid: pid, selected: overridden ? localSelected[pid] : !!p.selected };
+    });
+  }, [data, localSelected]);
+
+  const selectedCount      = policiesView.filter(p => p.selected).length;
+  const selectedWithEntry  = policiesView.filter(p => p.selected && (p.entries || []).length > 0).length;
+  const selectedMissing    = selectedCount - selectedWithEntry;
+  const allReviewed        = !!data && (selectedCount === 0 || selectedMissing === 0);
+
+  // Gate Plan 수립: as soon as the user has fetched the policy list, they're
+  // free to proceed.  Selected-but-empty policies show a warning but don't
+  // block — the codegen LLM still gets the raw policy info and can do its
+  // best.  Mapping must be complete (codegen needs the mapped resources).
+  useEffect(() => {
+    if (!mappingComplete) { onReviewComplete?.(false); return; }
+    onReviewComplete?.(!!data);
+  }, [mappingComplete, data, onReviewComplete]);
+
+  const toggleSelected = async (policy, next) => {
+    const pid = policy.policy_definition_id || policy._pid || "";
+    if (!pid) {
+      setError(`policy_definition_id 가 없어 선택할 수 없는 정책: ${policy.policy_name}`);
+      return;
+    }
+    // Optimistic update
+    setLocalSelected(prev => ({ ...prev, [pid]: next }));
+    setBusyPids(prev => { const n = new Set(prev); n.add(pid); return n; });
+    try {
+      await setPolicyGuidanceSelected(pid, next, policy.policy_name || "");
+      // Reflect server state by re-fetching (cheap, no LLM).
+      const res = await discoverRelevantPolicies({ subscriptionId, azureTypes });
+      setData(res);
+      // Keep this pid's override in case server hasn't fully synced; clear others.
+      setLocalSelected(prev => ({ [pid]: prev[pid] !== undefined ? prev[pid] : next }));
+    } catch (e) {
+      setLocalSelected(prev => ({ ...prev, [pid]: !next }));
+      setError(e.message || String(e));
+    } finally {
+      setBusyPids(prev => { const n = new Set(prev); n.delete(pid); return n; });
+    }
+  };
+
+  // Header "전체 선택" tri-state checkbox
+  const allSelectedNow   = policiesView.length > 0 && policiesView.every(p => p.selected);
+  const someSelectedNow  = !allSelectedNow && policiesView.some(p => p.selected);
+  const toggleAll = async () => {
+    const next = !allSelectedNow;
+    // Bulk optimistic update
+    const optimistic = {};
+    for (const p of policiesView) {
+      const pid = p.policy_definition_id || "";
+      if (pid) optimistic[pid] = next;
+    }
+    setLocalSelected(optimistic);
+    // Fire all PUTs in parallel.  Don't await refresh between each — too slow.
+    try {
+      await Promise.all(policiesView
+        .filter(p => p.policy_definition_id && p.selected !== next)
+        .map(p => setPolicyGuidanceSelected(p.policy_definition_id, next, p.policy_name || "")));
+      const res = await discoverRelevantPolicies({ subscriptionId, azureTypes });
+      setData(res);
+      setLocalSelected({});
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+  };
+
+  return (
+    <div style={{
+      padding: "16px 20px",
+      background: "var(--color-surface)",
+      border: "1px solid var(--color-border)",
+      borderRadius: "var(--radius-sm)",
+      marginBottom: 16,
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 12,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", fontWeight: 700, color: "var(--color-text)" }}>
+          <span style={{ color: allReviewed ? "#16a34a" : "#a855f7" }}>●</span> 정책 지침 검토
+          <span style={{ fontWeight: 400, fontSize: "0.78rem", color: "var(--color-text-light)" }}>
+            — Plan 수립에 적용될 Azure Policy 선택 + 코드 생성 지침 작성
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {data && (
+            <span style={{ fontSize: "0.74rem", color: "var(--color-text-light)" }}>
+              전체 {data.summary?.total ?? 0}개 · 선택 {selectedCount} · 지침 {selectedWithEntry}/{selectedCount}
+            </span>
+          )}
+          <button
+            className="run-btn action-btn"
+            type="button"
+            onClick={refresh}
+            disabled={!mappingComplete || !subscriptionId || loading}
+            style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}
+            title={
+              !mappingComplete ? "먼저 Mapping 을 완료해주세요" :
+              !subscriptionId  ? "Azure subscription 이 필요합니다" : ""
+            }>
+            {loading ? <><span className="spinner" />조회 중…</> : (data ? "↻ 정책 조회" : "🔎 정책 조회")}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="form-error" style={{ marginBottom: 10, fontSize: "0.78rem" }}>{error}</div>
+      )}
+
+      {!mappingComplete && (
+        <div style={{ fontSize: "0.8rem", color: "var(--color-text-light)" }}>
+          먼저 위의 <strong>리소스 매핑</strong> 을 완료해주세요.
+        </div>
+      )}
+
+      {mappingComplete && !subscriptionId && (
+        <div className="form-error" style={{ fontSize: "0.78rem" }}>
+          Azure subscription_id 가 비어있어 정책을 조회할 수 없습니다.  Connect 단계에서 Azure 계정을 선택해주세요.
+        </div>
+      )}
+
+      {mappingComplete && subscriptionId && !data && !loading && (
+        <div style={{ fontSize: "0.8rem", color: "var(--color-text-light)" }}>
+          <strong>정책 조회</strong> 버튼을 눌러 구독의 enforced 정책 목록을 가져오세요.
+        </div>
+      )}
+
+      {data && policiesView.length === 0 && (
+        <div style={{ fontSize: "0.8rem", color: "var(--color-text-light)" }}>
+          구독에 enforced 정책이 없습니다.  바로 Plan 수립으로 넘어가도 됩니다.
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* 전역 지침 섹션 — 모든 정책 / 모든 plan 에 공통 주입 */}
+          <GeneralGuidancePanel
+            entries={generalEntries}
+            onChange={refreshGeneral}
+          />
+        </>
+      )}
+
+      {data && policiesView.length > 0 && (
+        <>
+          <div style={{ fontSize: "0.78rem", color: "var(--color-text-light)", marginTop: 12, marginBottom: 8 }}>
+            Plan 수립에 적용될 정책을 <strong>체크박스</strong> 로 선택하세요.  선택된 정책마다 지침이 있으면 코드 생성 정확도가 높아집니다.  지침이 없을 땐 ✨ AI 초안 생성으로 시작하면 빠릅니다.
+          </div>
+          {/* 전체 선택 / 헤더 row */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "6px 12px", marginBottom: 6,
+            background: "var(--color-bg)", border: "1px solid var(--color-border)",
+            borderRadius: 4, fontSize: "0.74rem", color: "var(--color-text-light)",
+          }}>
+            <input type="checkbox"
+              checked={allSelectedNow}
+              ref={el => { if (el) el.indeterminate = someSelectedNow; }}
+              onChange={toggleAll} />
+            <span style={{ flex: 1 }}>전체 선택/해제 ({selectedCount}/{policiesView.length})</span>
+            {selectedMissing > 0 && (
+              <span style={{ color: "#a855f7", fontWeight: 600 }}>
+                지침 누락 {selectedMissing}건
+              </span>
+            )}
+          </div>
+          {/* Pagination — 10개 단위 */}
+          {(() => {
+            const totalPages = Math.max(1, Math.ceil(policiesView.length / PAGE_SIZE));
+            const safePage   = Math.min(page, totalPages - 1);
+            const pageItems  = policiesView.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+            return (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {pageItems.map(p => (
+                    <PolicyGuidanceRow key={p._pid || p.policy_name}
+                      policy={p}
+                      expanded={openPid === (p._pid || p.policy_name)}
+                      azureTypes={azureTypes}
+                      busy={p._pid && busyPids.has(p._pid)}
+                      onToggle={() => setOpenPid(openPid === (p._pid || p.policy_name) ? null : (p._pid || p.policy_name))}
+                      onChange={refresh}
+                      onToggleSelected={(next) => toggleSelected(p, next)}
+                    />
+                  ))}
+                </div>
+                {totalPages > 1 && (
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    marginTop: 10, fontSize: "0.78rem",
+                  }}>
+                    <button type="button"
+                      onClick={() => setPage(0)} disabled={safePage === 0}
+                      style={_pagerBtnStyle(safePage === 0)}>«</button>
+                    <button type="button"
+                      onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0}
+                      style={_pagerBtnStyle(safePage === 0)}>‹ 이전</button>
+                    <span style={{ padding: "0 10px", color: "var(--color-text-light)" }}>
+                      {safePage + 1} / {totalPages}
+                    </span>
+                    <button type="button"
+                      onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={safePage >= totalPages - 1}
+                      style={_pagerBtnStyle(safePage >= totalPages - 1)}>다음 ›</button>
+                    <button type="button"
+                      onClick={() => setPage(totalPages - 1)} disabled={safePage >= totalPages - 1}
+                      style={_pagerBtnStyle(safePage >= totalPages - 1)}>»</button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </>
+      )}
+    </div>
+  );
+}
+
+function _pagerBtnStyle(disabled) {
+  return {
+    minHeight: 26, padding: "0 10px", fontSize: "0.74rem",
+    background: "transparent", color: disabled ? "var(--color-text-light)" : "var(--color-text)",
+    border: "1px solid var(--color-border)", borderRadius: 3,
+    cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+  };
+}
+
+
+/** 전역 (cross-cutting) 지침 — Plan 수립 시 모든 정책에 공통 주입.
+ *  예: "모든 리소스에 tags = var.tags 적용", "naming 은 prefix + workload + env". */
+function GeneralGuidancePanel({ entries, onChange }) {
+  // Default collapsed when there are existing entries (panel might be tall),
+  // expanded when empty so user notices the "+ 추가" call to action.
+  const [open, setOpen]     = useState(entries.length === 0);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft]   = useState("");
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState(null);
+
+  const submitAdd = async () => {
+    if (!draft.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await addGeneralGuidance(draft);
+      setDraft(""); setAdding(false);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      marginBottom: 10, padding: "10px 12px",
+      background: "rgba(168,85,247,0.04)",
+      border: "1px solid rgba(168,85,247,0.4)",
+      borderRadius: "var(--radius-sm)",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10,
+        cursor: "pointer",
+      }} onClick={() => setOpen(o => !o)}>
+        <span style={{ color: "#a855f7", fontSize: "0.78rem", width: 14 }}>{open ? "▾" : "▸"}</span>
+        <strong style={{ fontSize: "0.82rem", color: "#a855f7" }}>📌 전역 지침</strong>
+        <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+          모든 정책 / 모든 Plan 수립 에 공통으로 주입 · {entries.length} 건
+        </span>
+        <div style={{ flex: 1 }} />
+        <button type="button"
+          onClick={e => { e.stopPropagation(); setOpen(true); setAdding(a => !a); }}
+          className="tab action-btn action-btn--secondary"
+          style={{ minHeight: 28, padding: "0 12px", fontSize: "0.74rem" }}>
+          {adding ? "취소" : "+ 추가"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {adding && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+              <textarea value={draft} onChange={e => setDraft(e.target.value)}
+                placeholder="새 전역 지침… (예: 모든 리소스에 var.tags 적용, naming 은 prefix-workload-env 형태)"
+                disabled={busy}
+                style={{
+                  minHeight: 60, padding: "8px 10px", fontSize: "0.8rem",
+                  fontFamily: "inherit",
+                  background: "var(--color-bg)", color: "var(--color-text)",
+                  border: "1px solid var(--color-border)", borderRadius: 4,
+                }}/>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+                <button type="button" onClick={submitAdd}
+                  disabled={busy || !draft.trim()}
+                  className="run-btn action-btn"
+                  style={{ minHeight: 28, padding: "0 12px", fontSize: "0.74rem", fontWeight: 600 }}>
+                  {busy ? "추가 중…" : "추가"}
+                </button>
+              </div>
+              {error && <div className="form-error" style={{ fontSize: "0.74rem" }}>{error}</div>}
+            </div>
+          )}
+          {entries.length === 0 ? (
+            <div style={{ fontSize: "0.76rem", color: "var(--color-text-light)" }}>(전역 지침 없음)</div>
+          ) : (
+            <div style={{
+              display: "flex", flexDirection: "column", gap: 6,
+              maxHeight: 280, overflowY: "auto",
+              paddingRight: 4,
+            }}>
+              {entries.map(e => (
+                <GeneralGuidanceItem key={e.id} entry={e} onChange={onChange} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function GeneralGuidanceItem({ entry, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText]       = useState(entry.text || "");
+  const [busy, setBusy]       = useState(false);
+  const [error, setError]     = useState(null);
+
+  const save = async () => {
+    setBusy(true); setError(null);
+    try {
+      await updateGeneralGuidance(entry.id, text);
+      setEditing(false);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+  const del = async () => {
+    setBusy(true); setError(null);
+    try {
+      await deleteGeneralGuidance(entry.id);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      padding: "6px 10px",
+      background: "var(--color-surface)",
+      border: "1px solid var(--color-border)",
+      borderRadius: 3, fontSize: "0.8rem", lineHeight: 1.55,
+    }}>
+      {editing ? (
+        <>
+          <textarea value={text} onChange={e => setText(e.target.value)}
+            disabled={busy}
+            style={{
+              width: "100%", minHeight: 60, padding: "6px 8px", fontSize: "0.8rem",
+              fontFamily: "inherit",
+              background: "var(--color-bg)", color: "var(--color-text)",
+              border: "1px solid var(--color-border)", borderRadius: 3,
+              boxSizing: "border-box",
+            }}/>
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" onClick={() => { setEditing(false); setText(entry.text || ""); setError(null); }}
+              disabled={busy} className="tab action-btn action-btn--secondary"
+              style={{ minHeight: 26, padding: "0 10px", fontSize: "0.72rem" }}>취소</button>
+            <button type="button" onClick={save}
+              disabled={busy || !text.trim()} className="run-btn action-btn"
+              style={{ minHeight: 26, padding: "0 10px", fontSize: "0.72rem", fontWeight: 600 }}>
+              {busy ? "저장…" : "저장"}
+            </button>
+          </div>
+          {error && <div className="form-error" style={{ fontSize: "0.72rem", marginTop: 4 }}>{error}</div>}
+        </>
+      ) : (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+          <div style={{ flex: 1, whiteSpace: "pre-wrap" }}>{entry.text}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.7rem" }}>
+            <button type="button" onClick={() => setEditing(true)} disabled={busy}
+              style={{ background: "none", border: "none", color: "var(--color-text-light)", cursor: "pointer", padding: 0 }}>✏️</button>
+            <button type="button" onClick={del} disabled={busy}
+              style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 0 }}>🗑</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function PolicyGuidanceRow({ policy, expanded, azureTypes, busy, onToggle, onChange, onToggleSelected }) {
+  const entries = policy.entries || [];
+  const hasEntries = entries.length > 0;
+  const isSelected = !!policy.selected;
+  const hasPid = !!(policy.policy_definition_id || policy._pid);
+  const borderColor = !isSelected ? "var(--color-border)"
+    : hasEntries ? "rgba(22,163,74,0.4)"
+    : "rgba(168,85,247,0.4)";
+  const bgColor = !isSelected ? "transparent"
+    : hasEntries ? "rgba(22,163,74,0.04)"
+    : "rgba(168,85,247,0.04)";
+  const effectMeta = policy.effect === "DENY"
+    ? { color: "#dc2626", label: "DENY" }
+    : { color: "#3b82f6", label: "MODIFY" };
+
+  return (
+    <div style={{
+      border: `1px solid ${borderColor}`,
+      background: bgColor,
+      borderRadius: 4,
+      opacity: isSelected ? 1 : 0.75,
+    }}>
+      <div style={{
+        padding: "8px 12px", display: "flex", alignItems: "center", gap: 8,
+        fontSize: "0.82rem",
+      }}>
+        <label style={{
+          display: "inline-flex", alignItems: "center",
+          cursor: hasPid && !busy ? "pointer" : "not-allowed",
+        }}
+          title={
+            !hasPid ? "policy_definition_id 가 없어 선택 불가" :
+            busy    ? "저장 중…" :
+            "이 정책을 Plan 수립에 적용"
+          }>
+          <input type="checkbox"
+            checked={isSelected}
+            disabled={!hasPid || busy}
+            onChange={e => onToggleSelected?.(e.target.checked)}
+            style={{ cursor: "inherit" }} />
+        </label>
+        <span onClick={onToggle} style={{ width: 14, color: "var(--color-text-light)", cursor: "pointer" }}>
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span style={{
+          fontSize: "0.66rem", padding: "1px 7px", borderRadius: 3,
+          color: effectMeta.color, border: `1px solid ${effectMeta.color}`, whiteSpace: "nowrap",
+        }}>{effectMeta.label}</span>
+        <strong onClick={onToggle}
+          style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>
+          {policy.policy_name}
+        </strong>
+        <span style={{ fontSize: "0.72rem", color: "var(--color-text-light)" }}>
+          {policy.azure_type}
+        </span>
+        {isSelected && (
+          <span style={{
+            fontSize: "0.7rem", padding: "1px 8px",
+            background: hasEntries ? "rgba(22,163,74,0.10)" : "transparent",
+            border: `1px solid ${hasEntries ? "#16a34a" : "#a855f7"}`,
+            color: hasEntries ? "#16a34a" : "#a855f7",
+            borderRadius: 3,
+          }}>
+            {hasEntries ? `${entries.length}개 지침` : "지침 없음"}
+          </span>
+        )}
+        {busy && <span className="spinner" style={{ marginLeft: 4 }} />}
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "0 12px 12px 32px", display: "flex", flexDirection: "column", gap: 6 }}>
+          {entries.length === 0 ? (
+            <div style={{ fontSize: "0.76rem", color: "var(--color-text-light)" }}>
+              아직 지침이 없습니다.  ✨ AI 초안 생성 또는 + 직접 추가로 시작하세요.
+            </div>
+          ) : entries.map(e => (
+            <GuidanceEntryRow key={e.id}
+              entry={e}
+              policyDefinitionId={policy.policy_definition_id}
+              onChange={onChange}
+            />
+          ))}
+          <GuidanceEntryAdder
+            policyDefinitionId={policy.policy_definition_id}
+            policyName={policy.policy_name}
+            rawPolicy={policy.raw}
+            azureTypes={azureTypes}
+            onChange={onChange}
+          />
+          {/* Raw policy JSON viewer — collapsed by default, scrollable. */}
+          {policy.raw && (
+            <details style={{ marginTop: 4 }}>
+              <summary style={{
+                cursor: "pointer", fontSize: "0.74rem", color: "var(--color-text-light)",
+                padding: "4px 0",
+              }}>
+                📄 raw policy rule JSON 보기
+              </summary>
+              <pre style={{
+                marginTop: 4, padding: "8px 10px",
+                background: "#0d1117", color: "#c9d1d9",
+                fontFamily: "monospace", fontSize: "0.72rem", lineHeight: 1.5,
+                borderRadius: 4, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                maxHeight: 320, overflow: "auto",
+              }}>{JSON.stringify(policy.raw, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function GuidanceEntryRow({ entry, policyDefinitionId, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText]       = useState(entry.text || "");
+  const [busy, setBusy]       = useState(false);
+  const [error, setError]     = useState(null);
+
+  const sourceBadge = entry.source === "default" ? "📌 default"
+    : entry.source === "ai_draft" ? "✨ AI"
+    : "✏️ 사용자";
+
+  const save = async () => {
+    setBusy(true); setError(null);
+    try {
+      await updatePolicyGuidanceEntry(policyDefinitionId, entry.id, text);
+      setEditing(false);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+  const del = async () => {
+    setBusy(true); setError(null);
+    try {
+      await deletePolicyGuidanceEntry(policyDefinitionId, entry.id);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      padding: "6px 10px",
+      background: "var(--color-surface)",
+      border: "1px solid var(--color-border)",
+      borderRadius: 3, fontSize: "0.8rem", lineHeight: 1.55,
+    }}>
+      {editing ? (
+        <>
+          <textarea value={text} onChange={e => setText(e.target.value)}
+            disabled={busy}
+            style={{
+              width: "100%", minHeight: 80, padding: "6px 8px", fontSize: "0.8rem",
+              fontFamily: "inherit",
+              background: "var(--color-bg)", color: "var(--color-text)",
+              border: "1px solid var(--color-border)", borderRadius: 3,
+              boxSizing: "border-box",
+            }} />
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" onClick={() => { setEditing(false); setText(entry.text || ""); setError(null); }}
+              disabled={busy}
+              className="tab action-btn action-btn--secondary"
+              style={{ padding: "2px 10px", fontSize: "0.72rem" }}>취소</button>
+            <button type="button" onClick={save}
+              disabled={busy || !text.trim()}
+              className="run-btn action-btn"
+              style={{ padding: "2px 10px", fontSize: "0.72rem", fontWeight: 600 }}>
+              {busy ? "저장…" : "저장"}
+            </button>
+          </div>
+          {error && <div className="form-error" style={{ fontSize: "0.72rem", marginTop: 4 }}>{error}</div>}
+        </>
+      ) : (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+          <div style={{ flex: 1, whiteSpace: "pre-wrap" }}>{entry.text}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.7rem", color: "var(--color-text-light)" }}>
+            <span title="출처">{sourceBadge}</span>
+            <button type="button" onClick={() => setEditing(true)} disabled={busy}
+              style={{ background: "none", border: "none", color: "var(--color-text-light)", cursor: "pointer", padding: 0 }}>✏️</button>
+            <button type="button" onClick={del} disabled={busy}
+              style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 0 }}>🗑</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function GuidanceEntryAdder({ policyDefinitionId, policyName, rawPolicy, azureTypes, onChange }) {
+  const [adding, setAdding] = useState(false);
+  const [text, setText]     = useState("");
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState(null);
+  const [drafting, setDrafting] = useState(false);
+
+  const draft = async () => {
+    if (!rawPolicy) return;
+    setDrafting(true); setError(null);
+    try {
+      const r = await draftPolicyGuidance(policyDefinitionId, { rawPolicy, scopeResourceTypes: azureTypes });
+      setText(r.draft || "");
+      setAdding(true);
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setDrafting(false); }
+  };
+  const save = async () => {
+    if (!text.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await addPolicyGuidanceEntry(policyDefinitionId, {
+        text,
+        source: drafting ? "ai_draft" : "user",
+        policyName,
+      });
+      setText("");
+      setAdding(false);
+      onChange?.();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  if (!adding) {
+    return (
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <button type="button" onClick={() => setAdding(true)}
+          className="tab action-btn action-btn--secondary"
+          style={{ minHeight: 30, padding: "0 14px", fontSize: "0.78rem" }}>
+          + 지침 추가
+        </button>
+        <button type="button" onClick={draft} disabled={drafting || !rawPolicy}
+          style={{
+            minHeight: 30, padding: "0 14px", fontSize: "0.78rem",
+            background: "transparent", color: "#a855f7",
+            border: "1px solid #a855f7", borderRadius: "var(--radius-sm)",
+            cursor: drafting || !rawPolicy ? "not-allowed" : "pointer",
+            display: "inline-flex", alignItems: "center", gap: 6,
+          }}>
+          {drafting ? <><span className="spinner" />초안 생성 중…</> : "✨ AI 초안 생성"}
+        </button>
+        {error && <div className="form-error" style={{ fontSize: "0.72rem", flex: 1 }}>{error}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <textarea value={text} onChange={e => setText(e.target.value)}
+        placeholder="이 정책에 대한 자연어 지침을 적어주세요…"
+        disabled={busy}
+        style={{
+          minHeight: 80, padding: "6px 8px", fontSize: "0.8rem", fontFamily: "inherit",
+          background: "var(--color-bg)", color: "var(--color-text)",
+          border: "1px solid var(--color-border)", borderRadius: 3,
+        }} />
+      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+        <button type="button" onClick={() => { setAdding(false); setText(""); setError(null); }}
+          disabled={busy} className="tab action-btn action-btn--secondary"
+          style={{ padding: "2px 10px", fontSize: "0.72rem" }}>취소</button>
+        <button type="button" onClick={save}
+          disabled={busy || !text.trim()}
+          className="run-btn action-btn"
+          style={{ padding: "2px 10px", fontSize: "0.72rem", fontWeight: 600 }}>
+          {busy ? "저장…" : "저장"}
+        </button>
+      </div>
+      {error && <div className="form-error" style={{ fontSize: "0.72rem" }}>{error}</div>}
+    </div>
+  );
+}
+
+
 function RunMigrationForm({
   awsSpec,
   setAwsSpec,
@@ -2608,6 +3341,9 @@ function RunMigrationForm({
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
   const [prepMessage, setPrepMessage] = useState(null);
+  // True once the user has at least one guidance entry per relevant policy
+  // (or there are no policies in scope).  Plan 수립 button is gated on this.
+  const [guidanceReviewComplete, setGuidanceReviewComplete] = useState(false);
 
   // Latest onPlanCompleted via ref so pollStatus doesn't re-create each render
   // (which would re-fire the [jobId, pollStatus] effect into an infinite poll).
@@ -2794,8 +3530,18 @@ function RunMigrationForm({
 
       {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
 
-      {/* ─── Plan 실행 Panel ─── (이미 수립 완료된 plan 보기 모드에선 숨김) */}
-      {!preloadedRunId && (
+      {/* ─── 정책 지침 검토 Panel ─── 매핑 완료 후, Plan 수립 전 gate.
+          Plan 이 완료된 후에도 표시 — 사용자가 지침을 수정하고 다시 수립할 수 있도록. */}
+      <PolicyGuidanceReview
+        subscriptionId={targetSubscriptionId}
+        mappings={mapping?.mappings || []}
+        mappingComplete={!!mapping?.mappingComplete}
+        onReviewComplete={setGuidanceReviewComplete}
+      />
+
+      {/* ─── Plan 실행 Panel ─── 항상 표시.  수립 완료 후에도 동일 scope 로
+          다시 수립할 수 있게 버튼을 유지. */}
+      {true && (
       <div style={{
         padding: "16px 20px",
         background: "var(--color-surface)",
@@ -2820,16 +3566,21 @@ function RunMigrationForm({
               className="run-btn action-btn"
               type="button"
               onClick={handleRun}
-              disabled={isRunning || mapping.loading || !awsSpec.trim() || !mapping.mappingComplete}
+              disabled={isRunning || !awsSpec.trim() || !mapping.mappingComplete || !guidanceReviewComplete}
               style={{ minHeight: 34, padding: "0 20px", fontSize: "0.82rem", fontWeight: 600 }}
-              title={!mapping.mappingComplete ? "먼저 Mapping 을 완료해주세요" : ""}
+              title={
+                !mapping.mappingComplete ? "먼저 Mapping 을 완료해주세요" :
+                !guidanceReviewComplete  ? "정책 지침 검토를 먼저 완료해주세요 (위 패널)" : ""
+              }
             >
-              {mapping.loading && !isRunning ? (
-                <><span className="spinner" />Mapping…</>
-              ) : isRunning ? (
+              {isRunning ? (
                 <><span className="spinner" />{status?.status === "running" ? "수립 중…" : "시작 중…"}</>
               ) : !mapping.mappingComplete ? (
                 <>🚀 Plan 수립</>
+              ) : !guidanceReviewComplete ? (
+                <>🚀 Plan 수립 (정책 지침 검토 필요)</>
+              ) : status?.status === "completed" ? (
+                <>🔄 Plan 다시 수립</>
               ) : (
                 <>🚀 Plan 수립</>
               )}
