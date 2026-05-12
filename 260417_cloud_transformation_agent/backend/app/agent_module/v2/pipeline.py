@@ -205,10 +205,27 @@ def run_migration_v2(
     else:
         pipeline_log.append("Step 4/5: 검증 건너뜀 (skip_validation=True)")
 
-    # ── Step 5: Data migrations (rule-based) ──────────────────────
-    pipeline_log.append("Step 5/5: 데이터 이전 스크립트 (rule-based)")
-    data_migs = _generate_data_migrations(ctx)
-    pipeline_log.append(f"  • {len(data_migs)}개 스크립트 생성")
+    # ── Step 5: Data migrations (LLM) ─────────────────────────────
+    # 각 매핑된 AWS 데이터 리소스 (S3/RDS/Dynamo/Redis 등) 에 대한 shell
+    # migration 스크립트를 LLM 이 직접 작성.  rule-based fallback 은 LLM
+    # 실패 시에만 사용.
+    pipeline_log.append("Step 5/5: 데이터 이전 스크립트 (LLM)")
+    t0 = time.time()
+    data_migs: List[DataMigrationScript] = []
+    try:
+        from .data_migration import generate_data_migration_scripts as gen_dm
+        data_migs, dm_log = gen_dm(
+            ctx,
+            llm_deployment=llm_deployment,
+            azure_openai_endpoint=azure_openai_endpoint,
+        )
+        for line in dm_log:
+            pipeline_log.append(f"  · {line}")
+        pipeline_log.append(f"  • {time.time() - t0:.1f}s — {len(data_migs)}개 스크립트 (LLM)")
+    except Exception as e:
+        pipeline_log.append(f"  • LLM 실패, rule-based fallback: {e}")
+        data_migs = _generate_data_migrations(ctx)
+        pipeline_log.append(f"  • fallback → {len(data_migs)}개 스크립트")
 
     pipeline_log.append(f"전체 소요: {time.time() - started:.1f}s")
 
