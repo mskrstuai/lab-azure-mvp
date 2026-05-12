@@ -138,7 +138,7 @@
       "text": "[VM 키 페어 가이드]\n  - AWS .pem 키나 사용자 입력 SSH 키를 가져와 쓰지 않고, terraform 안에서 새 키  페어를 만들어 사용.\n  - 추천 패턴 (구체 HCL 예시 포함):\n    - tls_private_key.<vm_label>_ssh — 4096-bit RSA 키 페어 생성.\n    - azurerm_ssh_public_key.<vm_label>_ssh — Azure 콘솔에서 조회/재사용 가능한\n   리소스로 등록 (선택).\n    - azurerm_linux_virtual_machine.<vm_label> 의 admin_ssh_key { username =\n  \"azureuser\", public_key = tls_private_key...public_key_openssh } +\n  disable_password_authentication = true.\n    - output \"<vm_label>_private_key_pem\" sensitive = true 로 private key 노출.\n  - 보조 지침:\n    - providers.tf 에 tls ~> 4.0 provider 추가 required.\n    - Windows VM 은 random_password 로 admin_password 생성 + sensitive output.\n    - 여러 VM 이면 각자 별도 키 페어 — 공유 금지.",
       "source": "user",
       "created_at": 1778550111.213705,
-      "updated_at": 1778550218.7996879
+      "updated_at": 1778552385.5874538
     }
   ]
 }
